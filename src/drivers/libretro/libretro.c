@@ -32,6 +32,10 @@
 #include "libretro_dipswitch.h"
 #include "libretro_core_options.h"
 
+#ifdef PORTANDROID
+#include "emu_init.h"
+#endif
+
 #define MAX_PLAYERS 4 /* max supported players */
 #define MAX_PORTS 2   /* max controller ports,
                        * port 0 for player 1/3, port 1 for player 2/4 */
@@ -1695,13 +1699,18 @@ void retro_run(void)
       check_variables(false);
 
    FCEUD_UpdateInput();
+#ifdef PORTANDROID
+	FCEUI_Emulate(&gfx, &sound, &ssize, cb_context.video_skip);
+#else
    FCEUI_Emulate(&gfx, &sound, &ssize, 0);
-
+#endif
    for (i = 0; i < ssize; i++)
       sound[i] = (sound[i] << 16) | (sound[i] & 0xffff);
 
    audio_batch_cb((const int16_t*)sound, ssize);
-
+#ifdef PORTANDROID
+   if(!cb_context.video_skip)
+#endif
    retro_run_blit(gfx);
 }
 
