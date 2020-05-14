@@ -1,3 +1,6 @@
+#ifndef _MMC3_H
+#define _MMC3_H
+
 extern uint8 MMC3_cmd;
 extern uint8 mmc3opts;
 extern uint8 A000B;
@@ -18,9 +21,12 @@ extern void (*mwrap)(uint8 V);
 void GenMMC3Power(void);
 void GenMMC3Restore(int version);
 void MMC3RegReset(void);
+void GenMMC3Close(void);
 void FixMMC3PRG(int V);
 void FixMMC3CHR(int V);
 DECLFW(MMC3_CMDWrite);
 DECLFW(MMC3_IRQWrite);
 
 void GenMMC3_Init(CartInfo *info, int prg, int chr, int wram, int battery);
+
+#endif /* _MMC3_H */

@@ -26,6 +26,7 @@
 #include "x6502.h"
 #include "fceu.h"
 #include "fds.h"
+#include "fds_apu.h"
 #include "sound.h"
 #include "general.h"
 #include "state.h"
@@ -82,7 +83,29 @@ static int32 DiskPtr;
 static int32 DiskSeekIRQ;
 static uint8 SelectDisk, InDisk;
 
-uint32 lastDiskPtrRead, lastDiskPtrWrite;
+/* dec-12-19                                    */
+/* 4024(w), 4025(w), 4031(r) by dink(fbneo)     */
+/* remove this and old code after testing phase */
+#define USE_DINK
+
+enum FDS_DiskBlockIDs {
+	DSK_INIT = 0,
+	DSK_VOLUME,
+	DSK_FILECNT,
+	DSK_FILEHDR,
+	DSK_FILEDATA
+};
+
+static uint8  mapperFDS_control;    /* 4025(w) control register */
+static uint16 mapperFDS_filesize;   /* size of file being read/written */
+static uint8  mapperFDS_block;      /* block-id of current block */
+static uint16 mapperFDS_blockstart; /* start-address of current block */
+static uint16 mapperFDS_blocklen;   /* length of current block */
+static uint16 mapperFDS_diskaddr;   /* current address relative to blockstart */
+static uint8  mapperFDS_diskaccess; /* disk needs to be accessed at least once before writing */
+
+#define GET_FDS_DISK() (diskdata[InDisk][mapperFDS_blockstart + mapperFDS_diskaddr])
+#define FDS_DISK_INSERTED (InDisk != 255)
 
 #define DC_INC    1
 #define BYTES_PER_SIDE 65500
@@ -115,15 +138,9 @@ static void FDSStateRestore(int version) {
 		}
 }
 
-void FDSSound(int a);
-void FDSSoundReset(void);
-void FDSSoundStateAdd(void);
-static void RenderSound(void);
-static void RenderSoundHQ(void);
-
 static void FDSInit(void) {
 	memset(FDSRegs, 0, sizeof(FDSRegs));
-	lastDiskPtrRead = lastDiskPtrWrite = writeskip = DiskPtr = DiskSeekIRQ = 0;
+	writeskip = DiskPtr = DiskSeekIRQ = 0;
 
 	setmirror(1);
 	setprg8(0xE000, 0);			/* BIOS */
@@ -148,6 +165,16 @@ static void FDSInit(void) {
 	FDSSoundReset();
 	InDisk = 0;
 	SelectDisk = 0;
+
+#ifdef USE_DINK
+	mapperFDS_control = 0;
+	mapperFDS_filesize = 0;
+	mapperFDS_block = 0;
+	mapperFDS_blockstart = 0;
+	mapperFDS_blocklen = 0;
+	mapperFDS_diskaddr = 0;
+	mapperFDS_diskaccess = 0;
+#endif
 }
 
 void FCEU_FDSInsert(int oride) {
@@ -216,11 +243,11 @@ static DECLFR(FDSRead4030) {
 	return ret;
 }
 
+#ifndef USE_DINK
 static DECLFR(FDSRead4031) {
 	static uint8 z = 0;
 	if (InDisk != 255) {
 		z = diskdata[InDisk][DiskPtr];
-		lastDiskPtrRead = DiskPtr;
 		#ifdef FCEUDEF_DEBUGGER
 		if (!fceuindbg)
 		#endif
@@ -232,6 +259,51 @@ static DECLFR(FDSRead4031) {
 	}
 	return z;
 }
+
+#else /* USE_DISK */
+
+static DECLFR(FDSRead4031) {
+	uint8 ret = 0xff;
+
+	if (FDS_DISK_INSERTED && mapperFDS_control & 0x04) {
+		mapperFDS_diskaccess = 1;
+		ret = 0;
+
+		switch (mapperFDS_block) {
+		case DSK_FILEHDR:
+			if (mapperFDS_diskaddr < mapperFDS_blocklen) {
+				ret = GET_FDS_DISK();
+				switch (mapperFDS_diskaddr) {
+				case 13:
+					mapperFDS_filesize = ret;
+					break;
+				case 14:
+					mapperFDS_filesize |= ret << 8;
+					/* char fdsfile[10]; */
+					/* strncpy(fdsfile, (char*)&diskdata[InDisk][mapperFDS_blockstart + 3], 8); */
+					/* printf("Read file: %s (size: %d)\n"), fdsfile, mapperFDS_filesize); */
+					break;
+				}
+				mapperFDS_diskaddr++;
+			}
+			break;
+		default:
+			if (mapperFDS_diskaddr < mapperFDS_blocklen) {
+				ret = GET_FDS_DISK();
+				mapperFDS_diskaddr++;
+			}
+			break;
+		}
+
+		DiskSeekIRQ = 150;
+		X6502_IRQEnd(FCEU_IQEXT2);
+	}
+
+	return ret;
+}
+
+#endif /* USE_DINK */
+
 static DECLFR(FDSRead4032) {
 	uint8 ret;
 
@@ -246,261 +318,6 @@ static DECLFR(FDSRead4032) {
 
 static DECLFR(FDSRead4033) {
 	return 0x80;		/* battery */
-}
-
-/* Begin FDS sound */
-
-#define FDSClock (1789772.7272727272727272 / 2)
-
-typedef struct {
-	int64 cycles;		/* Cycles per PCM sample */
-	int64 count;		/* Cycle counter */
-	int64 envcount;		/* Envelope cycle counter */
-	uint32 b19shiftreg60;
-	uint32 b24adder66;
-	uint32 b24latch68;
-	uint32 b17latch76;
-	int32 clockcount;	/* Counter to divide frequency by 8. */
-	uint8 b8shiftreg88;	/* Modulation register. */
-	uint8 amplitude[2];	/* Current amplitudes. */
-	uint8 speedo[2];
-	uint8 mwcount;
-	uint8 mwstart;
-	uint8 mwave[0x20];	/* Modulation waveform */
-	uint8 cwave[0x40];	/* Game-defined waveform(carrier) */
-	uint8 SPSG[0xB];
-} FDSSOUND;
-
-static FDSSOUND fdso;
-
-#define  SPSG  fdso.SPSG
-#define b19shiftreg60  fdso.b19shiftreg60
-#define b24adder66  fdso.b24adder66
-#define b24latch68  fdso.b24latch68
-#define b17latch76  fdso.b17latch76
-#define b8shiftreg88  fdso.b8shiftreg88
-#define clockcount  fdso.clockcount
-#define amplitude  fdso.amplitude
-#define speedo    fdso.speedo
-
-void FDSSoundStateAdd(void) {
-	AddExState(fdso.cwave, 64, 0, "WAVE");
-	AddExState(fdso.mwave, 32, 0, "MWAV");
-	AddExState(amplitude, 2, 0, "AMPL");
-	AddExState(SPSG, 0xB, 0, "SPSG");
-
-	AddExState(&b8shiftreg88, 1, 0, "B88");
-
-	AddExState(&clockcount, 4, 1, "CLOC");
-	AddExState(&b19shiftreg60, 4, 1, "B60");
-	AddExState(&b24adder66, 4, 1, "B66");
-	AddExState(&b24latch68, 4, 1, "B68");
-	AddExState(&b17latch76, 4, 1, "B76");
-}
-
-static DECLFR(FDSSRead) {
-	switch (A & 0xF) {
-	case 0x0: return(amplitude[0] | (X.DB & 0xC0));
-	case 0x2: return(amplitude[1] | (X.DB & 0xC0));
-	}
-	return(X.DB);
-}
-
-static DECLFW(FDSSWrite) {
-	if (FSettings.SndRate) {
-		if (FSettings.soundq >= 1)
-			RenderSoundHQ();
-		else
-			RenderSound();
-	}
-	A -= 0x4080;
-	switch (A) {
-	case 0x0:
-	case 0x4:
-		if (V & 0x80)
-			amplitude[(A & 0xF) >> 2] = V & 0x3F;
-		break;
-	case 0x7:
-		b17latch76 = 0;
-		SPSG[0x5] = 0;
-		break;
-	case 0x8:
-		b17latch76 = 0;
-		fdso.mwave[SPSG[0x5] & 0x1F] = V & 0x7;
-		SPSG[0x5] = (SPSG[0x5] + 1) & 0x1F;
-		break;
-	}
-	SPSG[A] = V;
-}
-
-/* $4080 - Fundamental wave amplitude data register 92
- * $4082 - Fundamental wave frequency data register 58
- * $4083 - Same as $4082($4083 is the upper 4 bits).
- *
- * $4084 - Modulation amplitude data register 78
- * $4086 - Modulation frequency data register 72
- * $4087 - Same as $4086($4087 is the upper 4 bits)
- */
-
-
-static void DoEnv() {
-	int x;
-
-	for (x = 0; x < 2; x++)
-		if (!(SPSG[x << 2] & 0x80) && !(SPSG[0x3] & 0x40)) {
-			static int counto[2] = { 0, 0 };
-
-			if (counto[x] <= 0) {
-				if (!(SPSG[x << 2] & 0x80)) {
-					if (SPSG[x << 2] & 0x40) {
-						if (amplitude[x] < 0x3F)
-							amplitude[x]++;
-					} else {
-						if (amplitude[x] > 0)
-							amplitude[x]--;
-					}
-				}
-				counto[x] = (SPSG[x << 2] & 0x3F);
-			} else
-				counto[x]--;
-		}
-}
-
-static DECLFR(FDSWaveRead) {
-	return(fdso.cwave[A & 0x3f] | (X.DB & 0xC0));
-}
-
-static DECLFW(FDSWaveWrite) {
-	if (SPSG[0x9] & 0x80)
-		fdso.cwave[A & 0x3f] = V & 0x3F;
-}
-
-static int ta;
-static INLINE void ClockRise(void) {
-	if (!clockcount) {
-		ta++;
-
-		b19shiftreg60 = (SPSG[0x2] | ((SPSG[0x3] & 0xF) << 8));
-		b17latch76 = (SPSG[0x6] | ((SPSG[0x07] & 0xF) << 8)) + b17latch76;
-
-		if (!(SPSG[0x7] & 0x80)) {
-			int t = fdso.mwave[(b17latch76 >> 13) & 0x1F] & 7;
-			int t2 = amplitude[1];
-			int adj = 0;
-
-			if ((t & 3)) {
-				if ((t & 4))
-					adj -= (t2 * ((4 - (t & 3))));
-				else
-					adj += (t2 * ((t & 3)));
-			}
-			adj *= 2;
-			if (adj > 0x7F) adj = 0x7F;
-			if (adj < -0x80) adj = -0x80;
-			b8shiftreg88 = 0x80 + adj;
-		} else {
-			b8shiftreg88 = 0x80;
-		}
-	} else {
-		b19shiftreg60 <<= 1;
-		b8shiftreg88 >>= 1;
-	}
-	b24adder66 = (b24latch68 + b19shiftreg60) & 0x1FFFFFF;
-}
-
-static INLINE void ClockFall(void) {
-	if ((b8shiftreg88 & 1))
-		b24latch68 = b24adder66;
-	clockcount = (clockcount + 1) & 7;
-}
-
-static INLINE int32 FDSDoSound(void) {
-	fdso.count += fdso.cycles;
-	if (fdso.count >= ((int64)1 << 40)) {
- dogk:
-		fdso.count -= (int64)1 << 40;
-		ClockRise();
-		ClockFall();
-		fdso.envcount--;
-		if (fdso.envcount <= 0) {
-			fdso.envcount += SPSG[0xA] * 3;
-			DoEnv();
-		}
-	}
-	if (fdso.count >= 32768) goto dogk;
-
-	/* Might need to emulate applying the amplitude to the waveform a bit better... */
-	{
-		int k = amplitude[0];
-		if (k > 0x20) k = 0x20;
-		return (fdso.cwave[b24latch68 >> 19] * k) * 4 / ((SPSG[0x9] & 0x3) + 2);
-	}
-}
-
-static int32 FBC = 0;
-
-static void RenderSound(void) {
-	int32 end, start;
-	int32 x;
-
-	start = FBC;
-	end = (SOUNDTS << 16) / soundtsinc;
-	if (end <= start)
-		return;
-	FBC = end;
-
-	if (!(SPSG[0x9] & 0x80))
-		for (x = start; x < end; x++) {
-			uint32 t = FDSDoSound();
-			t += t >> 1;
-			t >>= 4;
-			Wave[x >> 4] += t;	/* (t>>2)-(t>>3); */ /* >>3; */
-		}
-}
-
-static void RenderSoundHQ(void) {
-	uint32 x;
-
-	if (!(SPSG[0x9] & 0x80))
-		for (x = FBC; x < SOUNDTS; x++) {
-			uint32 t = FDSDoSound();
-			t += t >> 1;
-			WaveHi[x] += t;	/* (t<<2)-(t<<1); */
-		}
-	FBC = SOUNDTS;
-}
-
-static void HQSync(int32 ts) {
-	FBC = ts;
-}
-
-void FDSSound(int c) {
-	RenderSound();
-	FBC = c;
-}
-
-static void FDS_ESI(void) {
-	if (FSettings.SndRate) {
-		if (FSettings.soundq >= 1) {
-			fdso.cycles = (int64)1 << 39;
-		} else {
-			fdso.cycles = ((int64)1 << 40) * FDSClock;
-			fdso.cycles /= FSettings.SndRate * 16;
-		}
-	}
-	SetReadHandler(0x4040, 0x407f, FDSWaveRead);
-	SetWriteHandler(0x4040, 0x407f, FDSWaveWrite);
-	SetWriteHandler(0x4080, 0x408A, FDSSWrite);
-	SetReadHandler(0x4090, 0x4092, FDSSRead);
-}
-
-void FDSSoundReset(void) {
-	memset(&fdso, 0, sizeof(fdso));
-	FDS_ESI();
-	GameExpSound.HiSync = HQSync;
-	GameExpSound.HiFill = RenderSoundHQ;
-	GameExpSound.Fill = FDSSound;
-	GameExpSound.RChange = FDS_ESI;
 }
 
 static DECLFW(FDSWrite) {
@@ -530,6 +347,7 @@ static DECLFW(FDSWrite) {
 			X6502_IRQEnd(FCEU_IQEXT2);
 		}
 	case 0x4024:
+#ifndef USE_DINK
 		if ((InDisk != 255) && !(FDSRegs[5] & 0x4) && (FDSRegs[3] & 0x1)) {
 			if (DiskPtr >= 0 && DiskPtr < 65500) {
 				if (writeskip)
@@ -537,12 +355,46 @@ static DECLFW(FDSWrite) {
 				else if (DiskPtr >= 2) {
 					DiskWritten = 1;
 					diskdata[InDisk][DiskPtr - 2] = V;
-					lastDiskPtrWrite = DiskPtr - 2;
 				}
 			}
 		}
+#else /* USE_DINK */
+		if (FDS_DISK_INSERTED && ~mapperFDS_control & 0x04) {
+
+			if (mapperFDS_diskaccess == 0) {
+				mapperFDS_diskaccess = 1;
+				break;
+			}
+
+			switch (mapperFDS_block) {
+				case DSK_FILEHDR:
+					if (mapperFDS_diskaddr < mapperFDS_blocklen) {
+						GET_FDS_DISK() = V;
+						switch (mapperFDS_diskaddr) {
+							case 13: mapperFDS_filesize = V; break;
+							case 14:
+								mapperFDS_filesize |= V << 8;
+								/* char fdsfile[10]; */
+								/* strncpy(fdsfile, (char*)&diskdata[InDisk][mapperFDS_blockstart + 3], 8); */
+								/* printf("Write file: %s (size: %d)\n"), fdsfile, mapperFDS_filesize); */
+								break;
+						}
+						mapperFDS_diskaddr++;
+					}
+					break;
+				default:
+					if (mapperFDS_diskaddr < mapperFDS_blocklen) {
+						GET_FDS_DISK() = V;
+						mapperFDS_diskaddr++;
+					}
+					break;
+			}
+
+		}
+#endif /* USE_DINK */
 		break;
 	case 0x4025:
+#ifndef USE_DINK
 		X6502_IRQEnd(FCEU_IQEXT2);
 		if (InDisk != 255) {
 			if (!(V & 0x40)) {
@@ -559,6 +411,55 @@ static DECLFW(FDSWrite) {
 			if (V & 0x40) DiskSeekIRQ = 200;
 		}
 		setmirror(((V >> 3) & 1) ^ 1);
+#else /* USE_DINK */
+		X6502_IRQEnd(FCEU_IQEXT2);
+		if (FDS_DISK_INSERTED) {
+			if (V & 0x40 && ~mapperFDS_control & 0x40) {
+				mapperFDS_diskaccess = 0;
+
+				DiskSeekIRQ = 150;
+
+				/* blockstart  - address of block on disk
+				 * diskaddr    - address relative to blockstart
+				 * _block -> _blockID ?
+				 */
+				mapperFDS_blockstart += mapperFDS_diskaddr;
+				mapperFDS_diskaddr = 0;
+
+				mapperFDS_block++;
+				if (mapperFDS_block > DSK_FILEDATA)
+					mapperFDS_block = DSK_FILEHDR;
+
+				switch (mapperFDS_block) {
+					case DSK_VOLUME:
+						mapperFDS_blocklen = 0x38;
+						break;
+					case DSK_FILECNT:
+						mapperFDS_blocklen = 0x02;
+						break;
+					case DSK_FILEHDR:
+						mapperFDS_blocklen = 0x10;
+						break;
+					case DSK_FILEDATA:		 /* <blockid><filedata> */
+						mapperFDS_blocklen = 0x01 + mapperFDS_filesize;
+						break;
+				}
+			}
+
+			if (V & 0x02) { /* transfer reset */
+				mapperFDS_block = DSK_INIT;
+				mapperFDS_blockstart = 0;
+				mapperFDS_blocklen = 0;
+				mapperFDS_diskaddr = 0;
+				DiskSeekIRQ = 150;
+			}
+			if (V & 0x40) { /* turn on motor */
+				DiskSeekIRQ = 150;
+			}
+		}
+		mapperFDS_control = V;
+		setmirror(((V >> 3) & 1) ^ 1);
+#endif /* USE_DINK */
 		break;
 	}
 	FDSRegs[A & 7] = V;
@@ -903,15 +804,24 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 	AddExState(&FDSRegs[3], 1, 0, "REG4");
 	AddExState(&FDSRegs[4], 1, 0, "REG5");
 	AddExState(&FDSRegs[5], 1, 0, "REG6");
-	AddExState(&IRQCount, 4, 1, "IRQC");
-	AddExState(&IRQLatch, 4, 1, "IQL1");
+	AddExState(&IRQCount, 4 | FCEUSTATE_RLSB, 1, "IRQC");
+	AddExState(&IRQLatch, 4 | FCEUSTATE_RLSB, 1, "IQL1");
 	AddExState(&IRQa, 1, 0, "IRQA");
 	AddExState(&writeskip, 1, 0, "WSKI");
-	AddExState(&DiskPtr, 4, 1, "DPTR");
-	AddExState(&DiskSeekIRQ, 4, 1, "DSIR");
+	AddExState(&DiskPtr, 4 | FCEUSTATE_RLSB, 1, "DPTR");
+	AddExState(&DiskSeekIRQ, 4 | FCEUSTATE_RLSB, 1, "DSIR");
 	AddExState(&SelectDisk, 1, 0, "SELD");
 	AddExState(&InDisk, 1, 0, "INDI");
 	AddExState(&DiskWritten, 1, 0, "DSKW");
+#ifdef USE_DINK
+	AddExState(&mapperFDS_control, 1, 0, "CTRG");
+	AddExState(&mapperFDS_filesize, 2 | FCEUSTATE_RLSB, 1, "FLSZ");
+	AddExState(&mapperFDS_block, 1, 0, "BLCK");
+	AddExState(&mapperFDS_blockstart, 2 | FCEUSTATE_RLSB, 1, "BLKS");
+	AddExState(&mapperFDS_blocklen, 2 | FCEUSTATE_RLSB, 1, "BLKL");
+	AddExState(&mapperFDS_diskaddr, 2 | FCEUSTATE_RLSB, 1, "DADR");
+	AddExState(&mapperFDS_diskaccess, 1, 0, "DACC");
+#endif
 
 	CHRRAMSize = 8192;
 	CHRRAM = (uint8*)FCEU_gmalloc(CHRRAMSize);

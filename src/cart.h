@@ -20,15 +20,17 @@ typedef struct {
 					 * set to mapper 4.
 					 */
 	int battery;	/* Presence of an actual battery. */
-	int prgRom;		/* total prg rom size in 16 K chunks */
-	int chrRom;		/* total chr rom size in 8 K chunks */
-	int prgRam;		/* prg ram size (volatile) */
-	int chrRam;		/* chr ram size (volatile) */
-	int prgRam_battery;	/* prg ram size (non-volatile or battery backed) */
-	int chrRam_battery;	/* chr ram size (non-volatile or battery backed) */
+	int PRGRomSize;		/* prg rom size in bytes */
+	int CHRRomSize;		/* chr rom size in bytes */
+	int PRGRamSize;		/* prg ram size in bytes (volatile) */
+	int CHRRamSize;		/* chr ram size in bytes (volatile) */
+	int PRGRamSaveSize;	/* prg ram size in bytes (non-volatile or battery backed) */
+	int CHRRamSaveSize;	/* chr ram size in bytes (non-volatile or battery backed) */
 	int region;			/* video system timing (ntsc, pal, dendy */
 
 	uint8 MD5[16];
+	uint32 PRGCRC32;
+	uint32 CHRCRC32;
 	uint32 CRC32;	/* Should be set by the iNES/UNIF loading
 					 * code, used by mapper/board code, maybe
 					 * other code in the future.
@@ -48,9 +50,6 @@ DECLFW(CartBW);
 
 extern uint8 *PRGptr[32];
 extern uint8 *CHRptr[32];
-
-extern uint32 PRGchip_max;
-extern uint32 CHRchip_max;
 
 extern uint32 PRGsize[32];
 extern uint32 CHRsize[32];

@@ -40,8 +40,8 @@ typedef struct {
 
 extern uint8 *ROM;
 extern uint8 *VROM;
-extern uint32 ROM_size;
-extern uint32 VROM_size;
+extern uint32 ROM_size;		/* prg size in 16K chunks */
+extern uint32 VROM_size;	/* chr size in 8K chunks */
 extern iNES_HEADER head;
 
 void NSFVRC6_Init(void);
@@ -136,6 +136,7 @@ void Mapper105_Init(CartInfo *);
 void Mapper106_Init(CartInfo *);
 void Mapper107_Init(CartInfo *);
 void Mapper108_Init(CartInfo *);
+void Mapper111_Init(CartInfo *);
 void Mapper112_Init(CartInfo *);
 void Mapper113_Init(CartInfo *);
 void Mapper114_Init(CartInfo *);
@@ -147,9 +148,12 @@ void Mapper120_Init(CartInfo *);
 void Mapper121_Init(CartInfo *);
 void Mapper125_Init(CartInfo *);
 void Mapper126_Init(CartInfo *);
+void Mapper132_Init(CartInfo *);
 void Mapper134_Init(CartInfo *);
+void Mapper136_Init(CartInfo *);
 void Mapper140_Init(CartInfo *);
 void Mapper144_Init(CartInfo *);
+void Mapper147_Init(CartInfo *);
 void Mapper151_Init(CartInfo *);
 void Mapper152_Init(CartInfo *);
 void Mapper153_Init(CartInfo *);
@@ -207,6 +211,7 @@ void Mapper213_Init(CartInfo *);
 void Mapper214_Init(CartInfo *);
 void Mapper216_Init(CartInfo *);
 void Mapper217_Init(CartInfo *);
+void Mapper218_Init(CartInfo *);
 void Mapper220_Init(CartInfo *);
 void Mapper222_Init(CartInfo *);
 void Mapper224_Init(CartInfo *);
@@ -238,5 +243,36 @@ void Mapper255_Init(CartInfo *);
 
 void GN45_Init(CartInfo *info); /* m361, m366 */
 void Mapper281_Init(CartInfo *);
+
+void Bs5652_Init(CartInfo *);
+void NC7000M_Init(CartInfo *);
+void J2282_Init(CartInfo *);
+
+void Mapper267_Init(CartInfo *);
+void Mapper269_Init(CartInfo *);
+void Mapper288_Init(CartInfo *);
+void Mapper297_Init(CartInfo *);
+void Mapper353_Init(CartInfo *);
+void Mapper356_Init(CartInfo *);
+void Mapper357_Init(CartInfo *);
+void Mapper359_Init(CartInfo *);
+void Mapper360_Init(CartInfo *);
+void Mapper369_Init(CartInfo *);
+void Mapper372_Init(CartInfo *);
+void Mapper374_Init(CartInfo *);
+void Mapper380_Init(CartInfo *);
+void Mapper381_Init(CartInfo *);
+void Mapper382_Init(CartInfo *);
+void Mapper389_Init(CartInfo *);
+void Mapper390_Init(CartInfo *);
+void Mapper516_Init(CartInfo *);
+void Mapper533_Init(CartInfo *);
+void Mapper534_Init(CartInfo *);
+void Mapper538_Init(CartInfo *);
+void Mapper539_Init(CartInfo *);
+void Mapper540_Init(CartInfo *);
+void Mapper541_Init(CartInfo *);
+void Mapper543_Init(CartInfo *);
+void Mapper550_Init(CartInfo *);
 
 #endif

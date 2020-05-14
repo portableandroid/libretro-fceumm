@@ -94,8 +94,6 @@ void Super24_Init(CartInfo *info);
 void Supervision16_Init(CartInfo *info);
 void TBROM_Init(CartInfo *info);
 void TCA01_Init(CartInfo *info);
-void TCU01_Init(CartInfo *info);
-void TCU02_Init(CartInfo *info);
 void TEROM_Init(CartInfo *info);
 void TFROM_Init(CartInfo *info);
 void TGROM_Init(CartInfo *info);
@@ -191,6 +189,12 @@ void FARIDUNROM_Init(CartInfo *info);		/* m324 */
 void BMCK3033_Init(CartInfo *info);			/* mm22 */
 void BMC830134C_Init(CartInfo *info);		/* m315 */
 void BMCGN26_Init(CartInfo *info);			/* m344 */
+
+void BS110_Init(CartInfo *info);
+void WellNoDG450_Init(CartInfo *info);
+void AbG1l_Init(CartInfo *info);
+void KG256_Init(CartInfo *info);
+void WAIXINGFS005_Init(CartInfo *info);
 
 #ifdef COPYFAMI
 void MapperCopyFamiMMC3_Init(CartInfo *info);

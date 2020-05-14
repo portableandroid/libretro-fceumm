@@ -5,6 +5,9 @@
 #include <stdarg.h>
 
 #include <libretro.h>
+#include <streams/memory_stream.h>
+#include <libretro_dipswitch.h>
+#include <libretro_core_options.h>
 
 #include "../../fceu.h"
 #include "../../fceu-endian.h"
@@ -27,10 +30,6 @@
 #if defined(RENDER_GSKIT_PS2)
 #include "libretro-common/include/libretro_gskit_ps2.h"
 #endif
-
-#include "libretro-common/include/streams/memory_stream.h"
-#include "libretro_dipswitch.h"
-#include "libretro_core_options.h"
 
 #ifdef PORTANDROID
 #include "emu_init.h"
@@ -76,16 +75,66 @@ static bool use_overscan;
 static bool overscan_h;
 static bool overscan_v;
 #endif
-static bool up_down_allowed = false;
+
 static bool use_raw_palette;
 static bool use_par;
-static bool enable_4player = false;
-static unsigned turbo_enabler[MAX_PLAYERS] = {0};
-static unsigned turbo_delay = 0;
-static unsigned input_type[MAX_PLAYERS + 1] = {0}; /* 4-players + famicom expansion */
+
+/*
+ * Flags to keep track of whether turbo
+ * buttons toggled on or off.
+ *
+ * There are two values in array
+ * for Turbo A and Turbo B for
+ * each player
+ */
+
+#define MAX_BUTTONS 8
+#define TURBO_BUTTONS 2
+unsigned char turbo_button_toggle[MAX_PLAYERS][TURBO_BUTTONS] = { {0} };
+
+typedef struct
+{
+   unsigned retro;
+   unsigned nes;
+} keymap;
+
+static const keymap turbomap[] = {
+   { RETRO_DEVICE_ID_JOYPAD_X, JOY_A },
+   { RETRO_DEVICE_ID_JOYPAD_Y, JOY_B },
+};
+
+static const keymap bindmap[] = {
+   { RETRO_DEVICE_ID_JOYPAD_A, JOY_A },
+   { RETRO_DEVICE_ID_JOYPAD_B, JOY_B },
+   { RETRO_DEVICE_ID_JOYPAD_SELECT, JOY_SELECT },
+   { RETRO_DEVICE_ID_JOYPAD_START, JOY_START },
+   { RETRO_DEVICE_ID_JOYPAD_UP, JOY_UP },
+   { RETRO_DEVICE_ID_JOYPAD_DOWN, JOY_DOWN },
+   { RETRO_DEVICE_ID_JOYPAD_LEFT, JOY_LEFT },
+   { RETRO_DEVICE_ID_JOYPAD_RIGHT, JOY_RIGHT },
+};
+
+typedef struct {
+   bool enable_4player;                /* four-score / 4-player adapter used */
+   bool up_down_allowed;               /* disabled simultaneous up+down and left+right dpad combinations */
+
+   /* turbo related */
+   uint32_t turbo_enabler[MAX_PLAYERS];
+   uint32_t turbo_delay;
+
+   uint32_t type[MAX_PLAYERS + 1];     /* 4-players + famicom expansion */
+
+   /* input data */
+   uint8_t JSReturn[MAX_PLAYERS];      /* 1-4 player data */
+   uint32_t MouseData[MAX_PORTS][3];   /* nes mouse data */
+   uint32_t FamicomData;               /* Famicom expansion port data */
+} NES_INPUT_T;
+
+static NES_INPUT_T nes_input = { 0 };
 enum RetroZapperInputModes{RetroLightgun, RetroMouse, RetroPointer};
 static enum RetroZapperInputModes zappermode = RetroLightgun;
-static unsigned show_advance_sound_options;
+
+static bool libretro_supports_bitmasks = false;
 
 /* emulator-specific variables */
 
@@ -96,17 +145,19 @@ extern uint8 NTARAM[0x800], PALRAM[0x20], SPRAM[0x100], PPU[4];
 /* overclock the console by adding dummy scanlines to PPU loop
  * disables DMC DMA and WaveHi filling for these dummies
  * doesn't work with new PPU */
-unsigned overclock_state = -1;
+unsigned overclock_enabled = -1;
 unsigned overclocked = 0;
 unsigned skip_7bit_overclocking = 1; /* 7-bit samples have priority over overclocking */
 unsigned totalscanlines = 0;
 unsigned normal_scanlines = 240;
 unsigned extrascanlines = 0;
 unsigned vblankscanlines = 0;
-
-static unsigned is_PAL = 0;
-static unsigned setregion = 0;
 unsigned dendy = 0;
+
+static unsigned systemRegion = 0;
+static unsigned opt_region = 0;
+static unsigned opt_showAdvSoundOptions = 0;
+static unsigned opt_showAdvSystemOptions = 0;
 
 int FCEUnetplay;
 #ifdef PSP
@@ -128,12 +179,8 @@ static unsigned sndvolume;
 unsigned swapDuty;
 
 static int32_t *sound = 0;
-static uint32_t JSReturn = 0;
 static uint32_t Dummy = 0;
-static uint32_t MouseData[MAX_PORTS][3] = { {0} };
-static uint32_t fc_MouseData[3] = {0};
 static uint32_t current_palette = 0;
-
 static unsigned serialize_size;
 
 int PPUViewScanline=0;
@@ -274,307 +321,386 @@ FILE *FCEUD_UTF8fopen(const char *n, const char *m)
 #define PAL_DEFAULT (PAL_TOTAL + 1)
 #define PAL_RAW     (PAL_TOTAL + 2)
 #define PAL_CUSTOM  (PAL_TOTAL + 3)
+
 static int external_palette_exist = 0;
 extern int ipalette;
 
+/* table for currently loaded palette */
+static uint8_t base_palette[192];
+
 struct st_palettes {
-	char name[32];
-	char desc[32];
-	unsigned int data[64];
+   char name[32];
+   char desc[32];
+   unsigned int data[64];
 };
 
 struct st_palettes palettes[] = {
    { "asqrealc", "AspiringSquire's Real palette",
       { 0x6c6c6c, 0x00268e, 0x0000a8, 0x400094,
-	      0x700070, 0x780040, 0x700000, 0x621600,
-	      0x442400, 0x343400, 0x005000, 0x004444,
-	      0x004060, 0x000000, 0x101010, 0x101010,
-	      0xbababa, 0x205cdc, 0x3838ff, 0x8020f0,
-	      0xc000c0, 0xd01474, 0xd02020, 0xac4014,
-	      0x7c5400, 0x586400, 0x008800, 0x007468,
-	      0x00749c, 0x202020, 0x101010, 0x101010,
-	      0xffffff, 0x4ca0ff, 0x8888ff, 0xc06cff,
-	      0xff50ff, 0xff64b8, 0xff7878, 0xff9638,
-	      0xdbab00, 0xa2ca20, 0x4adc4a, 0x2ccca4,
-	      0x1cc2ea, 0x585858, 0x101010, 0x101010,
-	      0xffffff, 0xb0d4ff, 0xc4c4ff, 0xe8b8ff,
-	      0xffb0ff, 0xffb8e8, 0xffc4c4, 0xffd4a8,
-	      0xffe890, 0xf0f4a4, 0xc0ffc0, 0xacf4f0,
-	      0xa0e8ff, 0xc2c2c2, 0x202020, 0x101010 }
-	},
+         0x700070, 0x780040, 0x700000, 0x621600,
+         0x442400, 0x343400, 0x005000, 0x004444,
+         0x004060, 0x000000, 0x101010, 0x101010,
+         0xbababa, 0x205cdc, 0x3838ff, 0x8020f0,
+         0xc000c0, 0xd01474, 0xd02020, 0xac4014,
+         0x7c5400, 0x586400, 0x008800, 0x007468,
+         0x00749c, 0x202020, 0x101010, 0x101010,
+         0xffffff, 0x4ca0ff, 0x8888ff, 0xc06cff,
+         0xff50ff, 0xff64b8, 0xff7878, 0xff9638,
+         0xdbab00, 0xa2ca20, 0x4adc4a, 0x2ccca4,
+         0x1cc2ea, 0x585858, 0x101010, 0x101010,
+         0xffffff, 0xb0d4ff, 0xc4c4ff, 0xe8b8ff,
+         0xffb0ff, 0xffb8e8, 0xffc4c4, 0xffd4a8,
+         0xffe890, 0xf0f4a4, 0xc0ffc0, 0xacf4f0,
+         0xa0e8ff, 0xc2c2c2, 0x202020, 0x101010 }
+   },
    { "nintendo-vc", "Virtual Console palette",
-	   { 0x494949, 0x00006a, 0x090063, 0x290059,
-		   0x42004a, 0x490000, 0x420000, 0x291100,
-		   0x182700, 0x003010, 0x003000, 0x002910,
-		   0x012043, 0x000000, 0x000000, 0x000000,
-		   0x747174, 0x003084, 0x3101ac, 0x4b0194,
-		   0x64007b, 0x6b0039, 0x6b2101, 0x5a2f00,
-		   0x424900, 0x185901, 0x105901, 0x015932,
-		   0x01495a, 0x101010, 0x000000, 0x000000,
-		   0xadadad, 0x4a71b6, 0x6458d5, 0x8450e6,
-		   0xa451ad, 0xad4984, 0xb5624a, 0x947132,
-		   0x7b722a, 0x5a8601, 0x388e31, 0x318e5a,
-		   0x398e8d, 0x383838, 0x000000, 0x000000,
-		   0xb6b6b6, 0x8c9db5, 0x8d8eae, 0x9c8ebc,
-		   0xa687bc, 0xad8d9d, 0xae968c, 0x9c8f7c,
-		   0x9c9e72, 0x94a67c, 0x84a77b, 0x7c9d84,
-		   0x73968d, 0xdedede, 0x000000, 0x000000 }
+      { 0x494949, 0x00006a, 0x090063, 0x290059,
+         0x42004a, 0x490000, 0x420000, 0x291100,
+         0x182700, 0x003010, 0x003000, 0x002910,
+         0x012043, 0x000000, 0x000000, 0x000000,
+         0x747174, 0x003084, 0x3101ac, 0x4b0194,
+         0x64007b, 0x6b0039, 0x6b2101, 0x5a2f00,
+         0x424900, 0x185901, 0x105901, 0x015932,
+         0x01495a, 0x101010, 0x000000, 0x000000,
+         0xadadad, 0x4a71b6, 0x6458d5, 0x8450e6,
+         0xa451ad, 0xad4984, 0xb5624a, 0x947132,
+         0x7b722a, 0x5a8601, 0x388e31, 0x318e5a,
+         0x398e8d, 0x383838, 0x000000, 0x000000,
+         0xb6b6b6, 0x8c9db5, 0x8d8eae, 0x9c8ebc,
+         0xa687bc, 0xad8d9d, 0xae968c, 0x9c8f7c,
+         0x9c9e72, 0x94a67c, 0x84a77b, 0x7c9d84,
+         0x73968d, 0xdedede, 0x000000, 0x000000 }
    },
    { "rgb", "Nintendo RGB PPU palette",
-	   { 0x6D6D6D, 0x002492, 0x0000DB, 0x6D49DB,
-		   0x92006D, 0xB6006D, 0xB62400, 0x924900,
-		   0x6D4900, 0x244900, 0x006D24, 0x009200,
-		   0x004949, 0x000000, 0x000000, 0x000000,
-		   0xB6B6B6, 0x006DDB, 0x0049FF, 0x9200FF,
-		   0xB600FF, 0xFF0092, 0xFF0000, 0xDB6D00,
-		   0x926D00, 0x249200, 0x009200, 0x00B66D,
-		   0x009292, 0x242424, 0x000000, 0x000000,
-		   0xFFFFFF, 0x6DB6FF, 0x9292FF, 0xDB6DFF,
-		   0xFF00FF, 0xFF6DFF, 0xFF9200, 0xFFB600,
-		   0xDBDB00, 0x6DDB00, 0x00FF00, 0x49FFDB,
-		   0x00FFFF, 0x494949, 0x000000, 0x000000,
-		   0xFFFFFF, 0xB6DBFF, 0xDBB6FF, 0xFFB6FF,
-		   0xFF92FF, 0xFFB6B6, 0xFFDB92, 0xFFFF49,
-		   0xFFFF6D, 0xB6FF49, 0x92FF6D, 0x49FFDB,
-		   0x92DBFF, 0x929292, 0x000000, 0x000000 }
+      { 0x6D6D6D, 0x002492, 0x0000DB, 0x6D49DB,
+         0x92006D, 0xB6006D, 0xB62400, 0x924900,
+         0x6D4900, 0x244900, 0x006D24, 0x009200,
+         0x004949, 0x000000, 0x000000, 0x000000,
+         0xB6B6B6, 0x006DDB, 0x0049FF, 0x9200FF,
+         0xB600FF, 0xFF0092, 0xFF0000, 0xDB6D00,
+         0x926D00, 0x249200, 0x009200, 0x00B66D,
+         0x009292, 0x242424, 0x000000, 0x000000,
+         0xFFFFFF, 0x6DB6FF, 0x9292FF, 0xDB6DFF,
+         0xFF00FF, 0xFF6DFF, 0xFF9200, 0xFFB600,
+         0xDBDB00, 0x6DDB00, 0x00FF00, 0x49FFDB,
+         0x00FFFF, 0x494949, 0x000000, 0x000000,
+         0xFFFFFF, 0xB6DBFF, 0xDBB6FF, 0xFFB6FF,
+         0xFF92FF, 0xFFB6B6, 0xFFDB92, 0xFFFF49,
+         0xFFFF6D, 0xB6FF49, 0x92FF6D, 0x49FFDB,
+         0x92DBFF, 0x929292, 0x000000, 0x000000 }
    },
    { "yuv-v3", "FBX's YUV-V3 palette",
-	   { 0x666666, 0x002A88, 0x1412A7, 0x3B00A4,
-		   0x5C007E, 0x6E0040, 0x6C0700, 0x561D00,
-		   0x333500, 0x0C4800, 0x005200, 0x004C18,
-		   0x003E5B, 0x000000, 0x000000, 0x000000,
-		   0xADADAD, 0x155FD9, 0x4240FF, 0x7527FE,
-		   0xA01ACC, 0xB71E7B, 0xB53120, 0x994E00,
-		   0x6B6D00, 0x388700, 0x0D9300, 0x008C47,
-		   0x007AA0, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x64B0FF, 0x9290FF, 0xC676FF,
-		   0xF26AFF, 0xFF6ECC, 0xFF8170, 0xEA9E22,
-		   0xBCBE00, 0x88D800, 0x5CE430, 0x45E082,
-		   0x48CDDE, 0x4F4F4F, 0x000000, 0x000000,
-		   0xFFFFFF, 0xC0DFFF, 0xD3D2FF, 0xE8C8FF,
-		   0xFAC2FF, 0xFFC4EA, 0xFFCCC5, 0xF7D8A5,
-		   0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC,
-		   0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000 }
+      { 0x666666, 0x002A88, 0x1412A7, 0x3B00A4,
+         0x5C007E, 0x6E0040, 0x6C0700, 0x561D00,
+         0x333500, 0x0C4800, 0x005200, 0x004C18,
+         0x003E5B, 0x000000, 0x000000, 0x000000,
+         0xADADAD, 0x155FD9, 0x4240FF, 0x7527FE,
+         0xA01ACC, 0xB71E7B, 0xB53120, 0x994E00,
+         0x6B6D00, 0x388700, 0x0D9300, 0x008C47,
+         0x007AA0, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x64B0FF, 0x9290FF, 0xC676FF,
+         0xF26AFF, 0xFF6ECC, 0xFF8170, 0xEA9E22,
+         0xBCBE00, 0x88D800, 0x5CE430, 0x45E082,
+         0x48CDDE, 0x4F4F4F, 0x000000, 0x000000,
+         0xFFFFFF, 0xC0DFFF, 0xD3D2FF, 0xE8C8FF,
+         0xFAC2FF, 0xFFC4EA, 0xFFCCC5, 0xF7D8A5,
+         0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC,
+         0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000 }
    },
    { "unsaturated-final", "FBX's Unsaturated-Final palette",
-	   { 0x676767, 0x001F8E, 0x23069E, 0x40008E,
-		   0x600067, 0x67001C, 0x5B1000, 0x432500,
-		   0x313400, 0x074800, 0x004F00, 0x004622,
-		   0x003A61, 0x000000, 0x000000, 0x000000,
-		   0xB3B3B3, 0x205ADF, 0x5138FB, 0x7A27EE,
-		   0xA520C2, 0xB0226B, 0xAD3702, 0x8D5600,
-		   0x6E7000, 0x2E8A00, 0x069200, 0x008A47,
-		   0x037B9B, 0x101010, 0x000000, 0x000000,
-		   0xFFFFFF, 0x62AEFF, 0x918BFF, 0xBC78FF,
-		   0xE96EFF, 0xFC6CCD, 0xFA8267, 0xE29B26,
-		   0xC0B901, 0x84D200, 0x58DE38, 0x46D97D,
-		   0x49CED2, 0x494949, 0x000000, 0x000000,
-		   0xFFFFFF, 0xC1E3FF, 0xD5D4FF, 0xE7CCFF,
-		   0xFBC9FF, 0xFFC7F0, 0xFFD0C5, 0xF8DAAA,
-		   0xEBE69A, 0xD1F19A, 0xBEF7AF, 0xB6F4CD,
-		   0xB7F0EF, 0xB2B2B2, 0x000000, 0x000000 }
+      { 0x676767, 0x001F8E, 0x23069E, 0x40008E,
+         0x600067, 0x67001C, 0x5B1000, 0x432500,
+         0x313400, 0x074800, 0x004F00, 0x004622,
+         0x003A61, 0x000000, 0x000000, 0x000000,
+         0xB3B3B3, 0x205ADF, 0x5138FB, 0x7A27EE,
+         0xA520C2, 0xB0226B, 0xAD3702, 0x8D5600,
+         0x6E7000, 0x2E8A00, 0x069200, 0x008A47,
+         0x037B9B, 0x101010, 0x000000, 0x000000,
+         0xFFFFFF, 0x62AEFF, 0x918BFF, 0xBC78FF,
+         0xE96EFF, 0xFC6CCD, 0xFA8267, 0xE29B26,
+         0xC0B901, 0x84D200, 0x58DE38, 0x46D97D,
+         0x49CED2, 0x494949, 0x000000, 0x000000,
+         0xFFFFFF, 0xC1E3FF, 0xD5D4FF, 0xE7CCFF,
+         0xFBC9FF, 0xFFC7F0, 0xFFD0C5, 0xF8DAAA,
+         0xEBE69A, 0xD1F19A, 0xBEF7AF, 0xB6F4CD,
+         0xB7F0EF, 0xB2B2B2, 0x000000, 0x000000 }
    },
    { "sony-cxa2025as-us", "Sony CXA2025AS US palette",
-	   { 0x585858, 0x00238C, 0x00139B, 0x2D0585,
-		   0x5D0052, 0x7A0017, 0x7A0800, 0x5F1800,
-		   0x352A00, 0x093900, 0x003F00, 0x003C22,
-		   0x00325D, 0x000000, 0x000000, 0x000000,
-		   0xA1A1A1, 0x0053EE, 0x153CFE, 0x6028E4,
-		   0xA91D98, 0xD41E41, 0xD22C00, 0xAA4400,
-		   0x6C5E00, 0x2D7300, 0x007D06, 0x007852,
-		   0x0069A9, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x1FA5FE, 0x5E89FE, 0xB572FE,
-		   0xFE65F6, 0xFE6790, 0xFE773C, 0xFE9308,
-		   0xC4B200, 0x79CA10, 0x3AD54A, 0x11D1A4,
-		   0x06BFFE, 0x424242, 0x000000, 0x000000,
-		   0xFFFFFF, 0xA0D9FE, 0xBDCCFE, 0xE1C2FE,
-		   0xFEBCFB, 0xFEBDD0, 0xFEC5A9, 0xFED18E,
-		   0xE9DE86, 0xC7E992, 0xA8EEB0, 0x95ECD9,
-		   0x91E4FE, 0xACACAC, 0x000000, 0x000000 }
+      { 0x585858, 0x00238C, 0x00139B, 0x2D0585,
+         0x5D0052, 0x7A0017, 0x7A0800, 0x5F1800,
+         0x352A00, 0x093900, 0x003F00, 0x003C22,
+         0x00325D, 0x000000, 0x000000, 0x000000,
+         0xA1A1A1, 0x0053EE, 0x153CFE, 0x6028E4,
+         0xA91D98, 0xD41E41, 0xD22C00, 0xAA4400,
+         0x6C5E00, 0x2D7300, 0x007D06, 0x007852,
+         0x0069A9, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x1FA5FE, 0x5E89FE, 0xB572FE,
+         0xFE65F6, 0xFE6790, 0xFE773C, 0xFE9308,
+         0xC4B200, 0x79CA10, 0x3AD54A, 0x11D1A4,
+         0x06BFFE, 0x424242, 0x000000, 0x000000,
+         0xFFFFFF, 0xA0D9FE, 0xBDCCFE, 0xE1C2FE,
+         0xFEBCFB, 0xFEBDD0, 0xFEC5A9, 0xFED18E,
+         0xE9DE86, 0xC7E992, 0xA8EEB0, 0x95ECD9,
+         0x91E4FE, 0xACACAC, 0x000000, 0x000000 }
    },
    { "pal", "PAL palette",
-	   { 0x808080, 0x0000BA, 0x3700BF, 0x8400A6,
-		   0xBB006A, 0xB7001E, 0xB30000, 0x912600,
-		   0x7B2B00, 0x003E00, 0x00480D, 0x003C22,
-		   0x002F66, 0x000000, 0x050505, 0x050505,
-		   0xC8C8C8, 0x0059FF, 0x443CFF, 0xB733CC,
-		   0xFE33AA, 0xFE375E, 0xFE371A, 0xD54B00,
-		   0xC46200, 0x3C7B00, 0x1D8415, 0x009566,
-		   0x0084C4, 0x111111, 0x090909, 0x090909,
-		   0xFEFEFE, 0x0095FF, 0x6F84FF, 0xD56FFF,
-		   0xFE77CC, 0xFE6F99, 0xFE7B59, 0xFE915F,
-		   0xFEA233, 0xA6BF00, 0x51D96A, 0x4DD5AE,
-		   0x00D9FF, 0x666666, 0x0D0D0D, 0x0D0D0D,
-		   0xFEFEFE, 0x84BFFF, 0xBBBBFF, 0xD0BBFF,
-		   0xFEBFEA, 0xFEBFCC, 0xFEC4B7, 0xFECCAE,
-		   0xFED9A2, 0xCCE199, 0xAEEEB7, 0xAAF8EE,
-		   0xB3EEFF, 0xDDDDDD, 0x111111, 0x111111 }
+      { 0x808080, 0x0000BA, 0x3700BF, 0x8400A6,
+         0xBB006A, 0xB7001E, 0xB30000, 0x912600,
+         0x7B2B00, 0x003E00, 0x00480D, 0x003C22,
+         0x002F66, 0x000000, 0x050505, 0x050505,
+         0xC8C8C8, 0x0059FF, 0x443CFF, 0xB733CC,
+         0xFE33AA, 0xFE375E, 0xFE371A, 0xD54B00,
+         0xC46200, 0x3C7B00, 0x1D8415, 0x009566,
+         0x0084C4, 0x111111, 0x090909, 0x090909,
+         0xFEFEFE, 0x0095FF, 0x6F84FF, 0xD56FFF,
+         0xFE77CC, 0xFE6F99, 0xFE7B59, 0xFE915F,
+         0xFEA233, 0xA6BF00, 0x51D96A, 0x4DD5AE,
+         0x00D9FF, 0x666666, 0x0D0D0D, 0x0D0D0D,
+         0xFEFEFE, 0x84BFFF, 0xBBBBFF, 0xD0BBFF,
+         0xFEBFEA, 0xFEBFCC, 0xFEC4B7, 0xFECCAE,
+         0xFED9A2, 0xCCE199, 0xAEEEB7, 0xAAF8EE,
+         0xB3EEFF, 0xDDDDDD, 0x111111, 0x111111 }
    },
    { "bmf-final2", "BMF's Final 2 palette",
-	   { 0x525252, 0x000080, 0x08008A, 0x2C007E,
-		   0x4A004E, 0x500006, 0x440000, 0x260800,
-		   0x0A2000, 0x002E00, 0x003200, 0x00260A,
-		   0x001C48, 0x000000, 0x000000, 0x000000,
-		   0xA4A4A4, 0x0038CE, 0x3416EC, 0x5E04DC,
-		   0x8C00B0, 0x9A004C, 0x901800, 0x703600,
-		   0x4C5400, 0x0E6C00, 0x007400, 0x006C2C,
-		   0x005E84, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x4C9CFF, 0x7C78FF, 0xA664FF,
-		   0xDA5AFF, 0xF054C0, 0xF06A56, 0xD68610,
-		   0xBAA400, 0x76C000, 0x46CC1A, 0x2EC866,
-		   0x34C2BE, 0x3A3A3A, 0x000000, 0x000000,
-		   0xFFFFFF, 0xB6DAFF, 0xC8CAFF, 0xDAC2FF,
-		   0xF0BEFF, 0xFCBCEE, 0xFAC2C0, 0xF2CCA2,
-		   0xE6DA92, 0xCCE68E, 0xB8EEA2, 0xAEEABE,
-		   0xAEE8E2, 0xB0B0B0, 0x000000, 0x000000 }
+      { 0x525252, 0x000080, 0x08008A, 0x2C007E,
+         0x4A004E, 0x500006, 0x440000, 0x260800,
+         0x0A2000, 0x002E00, 0x003200, 0x00260A,
+         0x001C48, 0x000000, 0x000000, 0x000000,
+         0xA4A4A4, 0x0038CE, 0x3416EC, 0x5E04DC,
+         0x8C00B0, 0x9A004C, 0x901800, 0x703600,
+         0x4C5400, 0x0E6C00, 0x007400, 0x006C2C,
+         0x005E84, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x4C9CFF, 0x7C78FF, 0xA664FF,
+         0xDA5AFF, 0xF054C0, 0xF06A56, 0xD68610,
+         0xBAA400, 0x76C000, 0x46CC1A, 0x2EC866,
+         0x34C2BE, 0x3A3A3A, 0x000000, 0x000000,
+         0xFFFFFF, 0xB6DAFF, 0xC8CAFF, 0xDAC2FF,
+         0xF0BEFF, 0xFCBCEE, 0xFAC2C0, 0xF2CCA2,
+         0xE6DA92, 0xCCE68E, 0xB8EEA2, 0xAEEABE,
+         0xAEE8E2, 0xB0B0B0, 0x000000, 0x000000 }
    },
    { "bmf-final3", "BMF's Final 3 palette",
-	   { 0x686868, 0x001299, 0x1A08AA, 0x51029A,
-		   0x7E0069, 0x8E001C, 0x7E0301, 0x511800,
-		   0x1F3700, 0x014E00, 0x005A00, 0x00501C,
-		   0x004061, 0x000000, 0x000000, 0x000000,
-		   0xB9B9B9, 0x0C5CD7, 0x5035F0, 0x8919E0,
-		   0xBB0CB3, 0xCE0C61, 0xC02B0E, 0x954D01,
-		   0x616F00, 0x1F8B00, 0x01980C, 0x00934B,
-		   0x00819B, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x63B4FF, 0x9B91FF, 0xD377FF,
-		   0xEF6AFF, 0xF968C0, 0xF97D6C, 0xED9B2D,
-		   0xBDBD16, 0x7CDA1C, 0x4BE847, 0x35E591,
-		   0x3FD9DD, 0x606060, 0x000000, 0x000000,
-		   0xFFFFFF, 0xACE7FF, 0xD5CDFF, 0xEDBAFF,
-		   0xF8B0FF, 0xFEB0EC, 0xFDBDB5, 0xF9D28E,
-		   0xE8EB7C, 0xBBF382, 0x99F7A2, 0x8AF5D0,
-		   0x92F4F1, 0xBEBEBE, 0x000000, 0x000000 }
+      { 0x686868, 0x001299, 0x1A08AA, 0x51029A,
+         0x7E0069, 0x8E001C, 0x7E0301, 0x511800,
+         0x1F3700, 0x014E00, 0x005A00, 0x00501C,
+         0x004061, 0x000000, 0x000000, 0x000000,
+         0xB9B9B9, 0x0C5CD7, 0x5035F0, 0x8919E0,
+         0xBB0CB3, 0xCE0C61, 0xC02B0E, 0x954D01,
+         0x616F00, 0x1F8B00, 0x01980C, 0x00934B,
+         0x00819B, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x63B4FF, 0x9B91FF, 0xD377FF,
+         0xEF6AFF, 0xF968C0, 0xF97D6C, 0xED9B2D,
+         0xBDBD16, 0x7CDA1C, 0x4BE847, 0x35E591,
+         0x3FD9DD, 0x606060, 0x000000, 0x000000,
+         0xFFFFFF, 0xACE7FF, 0xD5CDFF, 0xEDBAFF,
+         0xF8B0FF, 0xFEB0EC, 0xFDBDB5, 0xF9D28E,
+         0xE8EB7C, 0xBBF382, 0x99F7A2, 0x8AF5D0,
+         0x92F4F1, 0xBEBEBE, 0x000000, 0x000000 }
    },
    { "smooth-fbx", "FBX's Smooth palette",
-	   { 0x6A6D6A, 0x001380, 0x1E008A, 0x39007A,
-		   0x550056, 0x5A0018, 0x4F1000, 0x3D1C00,
-		   0x253200, 0x003D00, 0x004000, 0x003924,
-		   0x002E55, 0x000000, 0x000000, 0x000000,
-		   0xB9BCB9, 0x1850C7, 0x4B30E3, 0x7322D6,
-		   0x951FA9, 0x9D285C, 0x983700, 0x7F4C00,
-		   0x5E6400, 0x227700, 0x027E02, 0x007645,
-		   0x006E8A, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x68A6FF, 0x8C9CFF, 0xB586FF,
-		   0xD975FD, 0xE377B9, 0xE58D68, 0xD49D29,
-		   0xB3AF0C, 0x7BC211, 0x55CA47, 0x46CB81,
-		   0x47C1C5, 0x4A4D4A, 0x000000, 0x000000,
-		   0xFFFFFF, 0xCCEAFF, 0xDDDEFF, 0xECDAFF,
-		   0xF8D7FE, 0xFCD6F5, 0xFDDBCF, 0xF9E7B5,
-		   0xF1F0AA, 0xDAFAA9, 0xC9FFBC, 0xC3FBD7,
-		   0xC4F6F6, 0xBEC1BE, 0x000000, 0x000000 }
+      { 0x6A6D6A, 0x001380, 0x1E008A, 0x39007A,
+         0x550056, 0x5A0018, 0x4F1000, 0x3D1C00,
+         0x253200, 0x003D00, 0x004000, 0x003924,
+         0x002E55, 0x000000, 0x000000, 0x000000,
+         0xB9BCB9, 0x1850C7, 0x4B30E3, 0x7322D6,
+         0x951FA9, 0x9D285C, 0x983700, 0x7F4C00,
+         0x5E6400, 0x227700, 0x027E02, 0x007645,
+         0x006E8A, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x68A6FF, 0x8C9CFF, 0xB586FF,
+         0xD975FD, 0xE377B9, 0xE58D68, 0xD49D29,
+         0xB3AF0C, 0x7BC211, 0x55CA47, 0x46CB81,
+         0x47C1C5, 0x4A4D4A, 0x000000, 0x000000,
+         0xFFFFFF, 0xCCEAFF, 0xDDDEFF, 0xECDAFF,
+         0xF8D7FE, 0xFCD6F5, 0xFDDBCF, 0xF9E7B5,
+         0xF1F0AA, 0xDAFAA9, 0xC9FFBC, 0xC3FBD7,
+         0xC4F6F6, 0xBEC1BE, 0x000000, 0x000000 }
    },
    { "composite-direct-fbx", "FBX's Composite Direct palette",
-	   { 0x656565, 0x00127D, 0x18008E, 0x360082,
-		   0x56005D, 0x5A0018, 0x4F0500, 0x381900,
-		   0x1D3100, 0x003D00, 0x004100, 0x003B17,
-		   0x002E55, 0x000000, 0x000000, 0x000000,
-		   0xAFAFAF, 0x194EC8, 0x472FE3, 0x6B1FD7,
-		   0x931BAE, 0x9E1A5E, 0x993200, 0x7B4B00,
-		   0x5B6700, 0x267A00, 0x008200, 0x007A3E,
-		   0x006E8A, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x64A9FF, 0x8E89FF, 0xB676FF,
-		   0xE06FFF, 0xEF6CC4, 0xF0806A, 0xD8982C,
-		   0xB9B40A, 0x83CB0C, 0x5BD63F, 0x4AD17E,
-		   0x4DC7CB, 0x4C4C4C, 0x000000, 0x000000,
-		   0xFFFFFF, 0xC7E5FF, 0xD9D9FF, 0xE9D1FF,
-		   0xF9CEFF, 0xFFCCF1, 0xFFD4CB, 0xF8DFB1,
-		   0xEDEAA4, 0xD6F4A4, 0xC5F8B8, 0xBEF6D3,
-		   0xBFF1F1, 0xB9B9B9, 0x000000, 0x000000 }
+      { 0x656565, 0x00127D, 0x18008E, 0x360082,
+         0x56005D, 0x5A0018, 0x4F0500, 0x381900,
+         0x1D3100, 0x003D00, 0x004100, 0x003B17,
+         0x002E55, 0x000000, 0x000000, 0x000000,
+         0xAFAFAF, 0x194EC8, 0x472FE3, 0x6B1FD7,
+         0x931BAE, 0x9E1A5E, 0x993200, 0x7B4B00,
+         0x5B6700, 0x267A00, 0x008200, 0x007A3E,
+         0x006E8A, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x64A9FF, 0x8E89FF, 0xB676FF,
+         0xE06FFF, 0xEF6CC4, 0xF0806A, 0xD8982C,
+         0xB9B40A, 0x83CB0C, 0x5BD63F, 0x4AD17E,
+         0x4DC7CB, 0x4C4C4C, 0x000000, 0x000000,
+         0xFFFFFF, 0xC7E5FF, 0xD9D9FF, 0xE9D1FF,
+         0xF9CEFF, 0xFFCCF1, 0xFFD4CB, 0xF8DFB1,
+         0xEDEAA4, 0xD6F4A4, 0xC5F8B8, 0xBEF6D3,
+         0xBFF1F1, 0xB9B9B9, 0x000000, 0x000000 }
    },
    { "pvm-style-d93-fbx", "FBX's PVM Style D93 palette",
-	   { 0x696B63, 0x001774, 0x1E0087, 0x340073,
-		   0x560057, 0x5E0013, 0x531A00, 0x3B2400,
-		   0x243000, 0x063A00, 0x003F00, 0x003B1E,
-		   0x00334E, 0x000000, 0x000000, 0x000000,
-		   0xB9BBB3, 0x1453B9, 0x4D2CDA, 0x671EDE,
-		   0x98189C, 0x9D2344, 0xA03E00, 0x8D5500,
-		   0x656D00, 0x2C7900, 0x008100, 0x007D42,
-		   0x00788A, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x69A8FF, 0x9691FF, 0xB28AFA,
-		   0xEA7DFA, 0xF37BC7, 0xF28E59, 0xE6AD27,
-		   0xD7C805, 0x90DF07, 0x64E53C, 0x45E27D,
-		   0x48D5D9, 0x4E5048, 0x000000, 0x000000,
-		   0xFFFFFF, 0xD2EAFF, 0xE2E2FF, 0xE9D8FF,
-		   0xF5D2FF, 0xF8D9EA, 0xFADEB9, 0xF9E89B,
-		   0xF3F28C, 0xD3FA91, 0xB8FCA8, 0xAEFACA,
-		   0xCAF3F3, 0xBEC0B8, 0x000000, 0x000000 }
+      { 0x696B63, 0x001774, 0x1E0087, 0x340073,
+         0x560057, 0x5E0013, 0x531A00, 0x3B2400,
+         0x243000, 0x063A00, 0x003F00, 0x003B1E,
+         0x00334E, 0x000000, 0x000000, 0x000000,
+         0xB9BBB3, 0x1453B9, 0x4D2CDA, 0x671EDE,
+         0x98189C, 0x9D2344, 0xA03E00, 0x8D5500,
+         0x656D00, 0x2C7900, 0x008100, 0x007D42,
+         0x00788A, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x69A8FF, 0x9691FF, 0xB28AFA,
+         0xEA7DFA, 0xF37BC7, 0xF28E59, 0xE6AD27,
+         0xD7C805, 0x90DF07, 0x64E53C, 0x45E27D,
+         0x48D5D9, 0x4E5048, 0x000000, 0x000000,
+         0xFFFFFF, 0xD2EAFF, 0xE2E2FF, 0xE9D8FF,
+         0xF5D2FF, 0xF8D9EA, 0xFADEB9, 0xF9E89B,
+         0xF3F28C, 0xD3FA91, 0xB8FCA8, 0xAEFACA,
+         0xCAF3F3, 0xBEC0B8, 0x000000, 0x000000 }
    },
    { "ntsc-hardware-fbx", "FBX's NTSC Hardware palette",
-	   { 0x6A6D6A, 0x001380, 0x1E008A, 0x39007A,
-		   0x550056, 0x5A0018, 0x4F1000, 0x382100,
-		   0x213300, 0x003D00, 0x004000, 0x003924,
-		   0x002E55, 0x000000, 0x000000, 0x000000,
-		   0xB9BCB9, 0x1850C7, 0x4B30E3, 0x7322D6,
-		   0x951FA9, 0x9D285C, 0x963C00, 0x7A5100,
-		   0x5B6700, 0x227700, 0x027E02, 0x007645,
-		   0x006E8A, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x68A6FF, 0x9299FF, 0xB085FF,
-		   0xD975FD, 0xE377B9, 0xE58D68, 0xCFA22C,
-		   0xB3AF0C, 0x7BC211, 0x55CA47, 0x46CB81,
-		   0x47C1C5, 0x4A4D4A, 0x000000, 0x000000,
-		   0xFFFFFF, 0xCCEAFF, 0xDDDEFF, 0xECDAFF,
-		   0xF8D7FE, 0xFCD6F5, 0xFDDBCF, 0xF9E7B5,
-		   0xF1F0AA, 0xDAFAA9, 0xC9FFBC, 0xC3FBD7,
-		   0xC4F6F6, 0xBEC1BE, 0x000000, 0x000000 }
+      { 0x6A6D6A, 0x001380, 0x1E008A, 0x39007A,
+         0x550056, 0x5A0018, 0x4F1000, 0x382100,
+         0x213300, 0x003D00, 0x004000, 0x003924,
+         0x002E55, 0x000000, 0x000000, 0x000000,
+         0xB9BCB9, 0x1850C7, 0x4B30E3, 0x7322D6,
+         0x951FA9, 0x9D285C, 0x963C00, 0x7A5100,
+         0x5B6700, 0x227700, 0x027E02, 0x007645,
+         0x006E8A, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x68A6FF, 0x9299FF, 0xB085FF,
+         0xD975FD, 0xE377B9, 0xE58D68, 0xCFA22C,
+         0xB3AF0C, 0x7BC211, 0x55CA47, 0x46CB81,
+         0x47C1C5, 0x4A4D4A, 0x000000, 0x000000,
+         0xFFFFFF, 0xCCEAFF, 0xDDDEFF, 0xECDAFF,
+         0xF8D7FE, 0xFCD6F5, 0xFDDBCF, 0xF9E7B5,
+         0xF1F0AA, 0xDAFAA9, 0xC9FFBC, 0xC3FBD7,
+         0xC4F6F6, 0xBEC1BE, 0x000000, 0x000000 }
    },
    { "nes-classic-fbx-fs", "FBX's NES-Classic FS palette",
-	   { 0x60615F, 0x000083, 0x1D0195, 0x340875,
-		   0x51055E, 0x56000F, 0x4C0700, 0x372308,
-		   0x203A0B, 0x0F4B0E, 0x194C16, 0x02421E,
-		   0x023154, 0x000000, 0x000000, 0x000000,
-		   0xA9AAA8, 0x104BBF, 0x4712D8, 0x6300CA,
-		   0x8800A9, 0x930B46, 0x8A2D04, 0x6F5206,
-		   0x5C7114, 0x1B8D12, 0x199509, 0x178448,
-		   0x206B8E, 0x000000, 0x000000, 0x000000,
-		   0xFBFBFB, 0x6699F8, 0x8974F9, 0xAB58F8,
-		   0xD557EF, 0xDE5FA9, 0xDC7F59, 0xC7A224,
-		   0xA7BE03, 0x75D703, 0x60E34F, 0x3CD68D,
-		   0x56C9CC, 0x414240, 0x000000, 0x000000,
-		   0xFBFBFB, 0xBED4FA, 0xC9C7F9, 0xD7BEFA,
-		   0xE8B8F9, 0xF5BAE5, 0xF3CAC2, 0xDFCDA7,
-		   0xD9E09C, 0xC9EB9E, 0xC0EDB8, 0xB5F4C7,
-		   0xB9EAE9, 0xABABAB, 0x000000, 0x000000 }
+      { 0x60615F, 0x000083, 0x1D0195, 0x340875,
+         0x51055E, 0x56000F, 0x4C0700, 0x372308,
+         0x203A0B, 0x0F4B0E, 0x194C16, 0x02421E,
+         0x023154, 0x000000, 0x000000, 0x000000,
+         0xA9AAA8, 0x104BBF, 0x4712D8, 0x6300CA,
+         0x8800A9, 0x930B46, 0x8A2D04, 0x6F5206,
+         0x5C7114, 0x1B8D12, 0x199509, 0x178448,
+         0x206B8E, 0x000000, 0x000000, 0x000000,
+         0xFBFBFB, 0x6699F8, 0x8974F9, 0xAB58F8,
+         0xD557EF, 0xDE5FA9, 0xDC7F59, 0xC7A224,
+         0xA7BE03, 0x75D703, 0x60E34F, 0x3CD68D,
+         0x56C9CC, 0x414240, 0x000000, 0x000000,
+         0xFBFBFB, 0xBED4FA, 0xC9C7F9, 0xD7BEFA,
+         0xE8B8F9, 0xF5BAE5, 0xF3CAC2, 0xDFCDA7,
+         0xD9E09C, 0xC9EB9E, 0xC0EDB8, 0xB5F4C7,
+         0xB9EAE9, 0xABABAB, 0x000000, 0x000000 }
    },
    { "nescap", "RGBSource's NESCAP palette",
-	   { 0x646365, 0x001580, 0x1D0090, 0x380082,
-		   0x56005D, 0x5A001A, 0x4F0900, 0x381B00,
-		   0x1E3100, 0x003D00, 0x004100, 0x003A1B,
-		   0x002F55, 0x000000, 0x000000, 0x000000,
-		   0xAFADAF, 0x164BCA, 0x472AE7, 0x6B1BDB,
-		   0x9617B0, 0x9F185B, 0x963001, 0x7B4800,
-		   0x5A6600, 0x237800, 0x017F00, 0x00783D,
-		   0x006C8C, 0x000000, 0x000000, 0x000000,
-		   0xFFFFFF, 0x60A6FF, 0x8F84FF, 0xB473FF,
-		   0xE26CFF, 0xF268C3, 0xEF7E61, 0xD89527,
-		   0xBAB307, 0x81C807, 0x57D43D, 0x47CF7E,
-		   0x4BC5CD, 0x4C4B4D, 0x000000, 0x000000,
-		   0xFFFFFF, 0xC2E0FF, 0xD5D2FF, 0xE3CBFF,
-		   0xF7C8FF, 0xFEC6EE, 0xFECEC6, 0xF6D7AE,
-		   0xE9E49F, 0xD3ED9D, 0xC0F2B2, 0xB9F1CC,
-		   0xBAEDED, 0xBAB9BB, 0x000000, 0x000000 }
+      { 0x646365, 0x001580, 0x1D0090, 0x380082,
+         0x56005D, 0x5A001A, 0x4F0900, 0x381B00,
+         0x1E3100, 0x003D00, 0x004100, 0x003A1B,
+         0x002F55, 0x000000, 0x000000, 0x000000,
+         0xAFADAF, 0x164BCA, 0x472AE7, 0x6B1BDB,
+         0x9617B0, 0x9F185B, 0x963001, 0x7B4800,
+         0x5A6600, 0x237800, 0x017F00, 0x00783D,
+         0x006C8C, 0x000000, 0x000000, 0x000000,
+         0xFFFFFF, 0x60A6FF, 0x8F84FF, 0xB473FF,
+         0xE26CFF, 0xF268C3, 0xEF7E61, 0xD89527,
+         0xBAB307, 0x81C807, 0x57D43D, 0x47CF7E,
+         0x4BC5CD, 0x4C4B4D, 0x000000, 0x000000,
+         0xFFFFFF, 0xC2E0FF, 0xD5D2FF, 0xE3CBFF,
+         0xF7C8FF, 0xFEC6EE, 0xFECEC6, 0xF6D7AE,
+         0xE9E49F, 0xD3ED9D, 0xC0F2B2, 0xB9F1CC,
+         0xBAEDED, 0xBAB9BB, 0x000000, 0x000000 }
    },
    { "wavebeam", "nakedarthur's Wavebeam palette",
-	   { 0X6B6B6B, 0X001B88, 0X21009A, 0X40008C,
-		   0X600067, 0X64001E, 0X590800, 0X481600,
-		   0X283600, 0X004500, 0X004908, 0X00421D,
-		   0X003659, 0X000000, 0X000000, 0X000000,
-		   0XB4B4B4, 0X1555D3, 0X4337EF, 0X7425DF,
-		   0X9C19B9, 0XAC0F64, 0XAA2C00, 0X8A4B00,
-		   0X666B00, 0X218300, 0X008A00, 0X008144,
-		   0X007691, 0X000000, 0X000000, 0X000000,
-		   0XFFFFFF, 0X63B2FF, 0X7C9CFF, 0XC07DFE,
-		   0XE977FF, 0XF572CD, 0XF4886B, 0XDDA029,
-		   0XBDBD0A, 0X89D20E, 0X5CDE3E, 0X4BD886,
-		   0X4DCFD2, 0X525252, 0X000000, 0X000000,
-		   0XFFFFFF, 0XBCDFFF, 0XD2D2FF, 0XE1C8FF,
-		   0XEFC7FF, 0XFFC3E1, 0XFFCAC6, 0XF2DAAD,
-		   0XEBE3A0, 0XD2EDA2, 0XBCF4B4, 0XB5F1CE,
-		   0XB6ECF1, 0XBFBFBF, 0X000000, 0X000000 }
+      { 0X6B6B6B, 0X001B88, 0X21009A, 0X40008C,
+         0X600067, 0X64001E, 0X590800, 0X481600,
+         0X283600, 0X004500, 0X004908, 0X00421D,
+         0X003659, 0X000000, 0X000000, 0X000000,
+         0XB4B4B4, 0X1555D3, 0X4337EF, 0X7425DF,
+         0X9C19B9, 0XAC0F64, 0XAA2C00, 0X8A4B00,
+         0X666B00, 0X218300, 0X008A00, 0X008144,
+         0X007691, 0X000000, 0X000000, 0X000000,
+         0XFFFFFF, 0X63B2FF, 0X7C9CFF, 0XC07DFE,
+         0XE977FF, 0XF572CD, 0XF4886B, 0XDDA029,
+         0XBDBD0A, 0X89D20E, 0X5CDE3E, 0X4BD886,
+         0X4DCFD2, 0X525252, 0X000000, 0X000000,
+         0XFFFFFF, 0XBCDFFF, 0XD2D2FF, 0XE1C8FF,
+         0XEFC7FF, 0XFFC3E1, 0XFFCAC6, 0XF2DAAD,
+         0XEBE3A0, 0XD2EDA2, 0XBCF4B4, 0XB5F1CE,
+         0XB6ECF1, 0XBFBFBF, 0X000000, 0X000000 }
    }
 };
 
-static bool libretro_supports_bitmasks = false;
+#ifdef HAVE_NTSC_FILTER
+/* ntsc */
+#include "nes_ntsc.h"
+#define NTSC_NONE       0
+#define NTSC_COMPOSITE  1
+#define NTSC_SVIDEO     2
+#define NTSC_RGB        3
+#define NTSC_MONOCHROME 4
+
+#define NTSC_WIDTH      602
+
+static unsigned use_ntsc = 0;
+static unsigned burst_phase;
+static nes_ntsc_t nes_ntsc;
+static nes_ntsc_setup_t ntsc_setup;
+static uint16_t *ntsc_video_out = NULL; /* for ntsc blit buffer */
+
+static void NTSCFilter_Cleanup(void)
+{
+   if (ntsc_video_out)
+      free(ntsc_video_out);
+   ntsc_video_out = NULL;
+}
+
+static void NTSCFilter_Init(void)
+{
+   memset(&nes_ntsc, 0, sizeof(nes_ntsc));
+   memset(&ntsc_setup, 0, sizeof(ntsc_setup));
+   ntsc_video_out = (uint16_t *)malloc(NTSC_WIDTH * NES_HEIGHT * sizeof(uint16_t));
+}
+
+static void NTSCFilter_Setup(void)
+{
+   if (ntsc_video_out == NULL)
+      NTSCFilter_Init();
+
+   switch (use_ntsc) {
+   case NTSC_COMPOSITE:
+      ntsc_setup = nes_ntsc_composite;
+      break;
+   case NTSC_SVIDEO:
+      ntsc_setup = nes_ntsc_svideo;
+      break;
+   case NTSC_RGB:
+      ntsc_setup = nes_ntsc_rgb;
+      break;
+   case NTSC_MONOCHROME:
+      ntsc_setup = nes_ntsc_monochrome;
+      break;
+   default:
+      break;
+   }
+
+   ntsc_setup.merge_fields = 0;
+   if ((GameInfo->type != GIT_VSUNI) && (current_palette == PAL_DEFAULT || current_palette == PAL_RAW))
+      /* use ntsc default palette instead of internal default palette for that "identity" effect */
+      ntsc_setup.base_palette = NULL;
+   else
+      /* use internal palette, this includes palette presets, external palette and custom palettes
+          * for VS. System games */
+      ntsc_setup.base_palette = (unsigned char const *)palo;
+
+   nes_ntsc_init(&nes_ntsc, &ntsc_setup);
+}
+#endif /* HAVE_NTSC_FILTER */
+
+static void ResetPalette(void);
+static void retro_set_custom_palette(void);
+
+static void ResetPalette(void)
+{
+   retro_set_custom_palette();
+#ifdef HAVE_NTSC_FILTER
+   NTSCFilter_Setup();
+#endif
+}
 
 unsigned retro_api_version(void)
 {
@@ -606,7 +732,7 @@ void retro_set_input_state(retro_input_state_t cb)
 
 static void update_nes_controllers(unsigned port, unsigned device)
 {
-   input_type[port] = device;
+   nes_input.type[port] = device;
 
    if (port < 4)
    {
@@ -617,17 +743,17 @@ static void update_nes_controllers(unsigned port, unsigned device)
          FCEU_printf(" Player %u: None Connected\n", port + 1);
          break;
       case RETRO_DEVICE_ZAPPER:
-         FCEUI_SetInput(port, SI_ZAPPER, MouseData[port], 1);
+         FCEUI_SetInput(port, SI_ZAPPER, nes_input.MouseData[port], 1);
          FCEU_printf(" Player %u: Zapper\n", port + 1);
          break;
       case RETRO_DEVICE_ARKANOID:
-         FCEUI_SetInput(port, SI_ARKANOID, MouseData[port], 0);
+         FCEUI_SetInput(port, SI_ARKANOID, nes_input.MouseData[port], 0);
          FCEU_printf(" Player %u: Arkanoid\n", port + 1);
          break;
       case RETRO_DEVICE_GAMEPAD:
       default:
-         input_type[port] = RETRO_DEVICE_GAMEPAD;
-         FCEUI_SetInput(port, SI_GAMEPAD, &JSReturn, 0);
+         nes_input.type[port] = RETRO_DEVICE_GAMEPAD;
+         FCEUI_SetInput(port, SI_GAMEPAD, (uint32_t*)nes_input.JSReturn, 0);
          FCEU_printf(" Player %u: Gamepad\n", port + 1);
          break;
       }
@@ -638,19 +764,19 @@ static void update_nes_controllers(unsigned port, unsigned device)
       switch (device)
       {
       case RETRO_DEVICE_FC_ARKANOID:
-         FCEUI_SetInputFC(SIFC_ARKANOID, fc_MouseData, 0);
+         FCEUI_SetInputFC(SIFC_ARKANOID, &nes_input.FamicomData, 0);
          FCEU_printf(" Famicom Expansion: Arkanoid\n");
          break;
       case RETRO_DEVICE_FC_SHADOW:
-         FCEUI_SetInputFC(SIFC_SHADOW, fc_MouseData, 1);
+         FCEUI_SetInputFC(SIFC_SHADOW, &nes_input.FamicomData, 1);
          FCEU_printf(" Famicom Expansion: (Bandai) Hyper Shot\n");
          break;
       case RETRO_DEVICE_FC_OEKAKIDS:
-         FCEUI_SetInputFC(SIFC_OEKAKIDS, fc_MouseData, 1);
+         FCEUI_SetInputFC(SIFC_OEKAKIDS, &nes_input.FamicomData, 1);
          FCEU_printf(" Famicom Expansion: Oeka Kids Tablet\n");
          break;
       case RETRO_DEVICE_FC_4PLAYERS:
-         FCEUI_SetInputFC(SIFC_4PLAYER, &JSReturn, 0);
+         FCEUI_SetInputFC(SIFC_4PLAYER, (uint32_t*)nes_input.JSReturn, 0);
          FCEU_printf(" Famicom Expansion: Famicom 4-Player Adapter\n");
          break;
       case RETRO_DEVICE_NONE:
@@ -718,18 +844,18 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
             /* This section automatically enables 4players support
              * when player 3 or 4 used */
 
-            input_type[port] = RETRO_DEVICE_NONE;
+            nes_input.type[port] = RETRO_DEVICE_NONE;
 
             if (device == RETRO_DEVICE_AUTO)
             {
-               if (enable_4player)
-                  input_type[port] = RETRO_DEVICE_GAMEPAD;
+               if (nes_input.enable_4player)
+                  nes_input.type[port] = RETRO_DEVICE_GAMEPAD;
             }
             else if (device == RETRO_DEVICE_GAMEPAD)
-               input_type[port] = RETRO_DEVICE_GAMEPAD;
+               nes_input.type[port] = RETRO_DEVICE_GAMEPAD;
 
             FCEU_printf(" Player %u: %s\n", port + 1,
-               (input_type[port] == RETRO_DEVICE_NONE) ? "None Connected" : "Gamepad");
+               (nes_input.type[port] == RETRO_DEVICE_NONE) ? "None Connected" : "Gamepad");
          }
          else /* do famicom controllers here */
          {
@@ -739,14 +865,14 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
                update_nes_controllers(4, fc_to_libretro(GameInfo->inputfc));
          }
 
-         if (input_type[2] == RETRO_DEVICE_GAMEPAD
-         || input_type[3] == RETRO_DEVICE_GAMEPAD)
+         if (nes_input.type[2] == RETRO_DEVICE_GAMEPAD
+         || nes_input.type[3] == RETRO_DEVICE_GAMEPAD)
             FCEUI_DisableFourScore(0);
          else
             FCEUI_DisableFourScore(1);
 
          /* check if famicom 4player adapter is used */
-         if (input_type[4] == RETRO_DEVICE_FC_4PLAYERS)
+         if (nes_input.type[4] == RETRO_DEVICE_FC_4PLAYERS)
             FCEUI_DisableFourScore(1);
       }
    }
@@ -840,15 +966,20 @@ void retro_get_system_info(struct retro_system_info *info)
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
 #ifdef PSP
-    unsigned width  = NES_WIDTH - (use_overscan ? 16 : 0);
-    unsigned height = NES_HEIGHT - (use_overscan ? 16 : 0);
+   unsigned width  = NES_WIDTH - (use_overscan ? 16 : 0);
+   unsigned height = NES_HEIGHT - (use_overscan ? 16 : 0);
 #else
-    unsigned width  = NES_WIDTH - (overscan_h ? 16 : 0);
-    unsigned height = NES_HEIGHT - (overscan_v ? 16 : 0);
+   unsigned width  = NES_WIDTH - (overscan_h ? 16 : 0);
+   unsigned height = NES_HEIGHT - (overscan_v ? 16 : 0);
 #endif
+#ifdef HAVE_NTSC_FILTER
+   info->geometry.base_width = (use_ntsc ? NES_NTSC_OUT_WIDTH(width) : width);
+   info->geometry.max_width = (use_ntsc ? NTSC_WIDTH : NES_WIDTH);
+#else
    info->geometry.base_width = width;
-   info->geometry.base_height = height;
    info->geometry.max_width = NES_WIDTH;
+#endif
+   info->geometry.base_height = height;
    info->geometry.max_height = NES_HEIGHT;
    info->geometry.aspect_ratio = (float)(use_par ? NES_8_7_PAR : NES_4_3);
    info->timing.sample_rate = (float)sndsamplerate;
@@ -886,52 +1017,53 @@ void retro_init(void)
 
 static void retro_set_custom_palette(void)
 {
-   uint8_t i,r,g,b;
+   unsigned i;
 
    ipalette = 0;
    use_raw_palette = false;
 
-   if (current_palette == PAL_DEFAULT || current_palette == PAL_CUSTOM
-   || (GameInfo->type == GIT_VSUNI))
-   {
-      if (current_palette == PAL_CUSTOM)
-      {
-          if (external_palette_exist && (GameInfo->type != GIT_VSUNI))
-              ipalette = 1;
-      }
+   /* VS UNISystem uses internal palette presets regardless of options */
+   if (GameInfo->type == GIT_VSUNI)
+      FCEU_ResetPalette();
 
-      FCEU_ResetPalette(); /* if ipalette is set to 1, external palette
-                            * is loaded when FCEU_ResetPalette is called,
-                            * else it will load default NES palette.
-                            * VS Unisystem should always use default palette.
-                            */
-      return;
+   /* Reset and choose between default internal or external custom palette */
+   else if (current_palette == PAL_DEFAULT || current_palette == PAL_CUSTOM)
+   {
+      ipalette = external_palette_exist && (current_palette == PAL_CUSTOM);
+
+      /* if ipalette is set to 1, external palette
+       * is loaded, else it will load default NES palette.
+       * FCEUI_SetPaletteArray() both resets the palette array to
+       * internal default palette and then chooses which one to use. */
+      FCEUI_SetPaletteArray( NULL );
    }
 
-   if (current_palette == PAL_RAW) /* raw palette */
+   /* setup raw palette */
+   else if (current_palette == PAL_RAW)
    {
+      pal color;
       use_raw_palette = true;
       for (i = 0; i < 64; i++)
       {
-         r = (((i >> 0) & 0xF) * 255) / 15;
-         g = (((i >> 4) & 0x3) * 255) / 3;
-         FCEUD_SetPalette( i, r, g, 0);
+         color.r = (((i >> 0) & 0xF) * 255) / 15;
+         color.g = (((i >> 4) & 0x3) * 255) / 3;
+         color.b = 0;
+         FCEUD_SetPalette( i, color.r, color.g, color.b);
       }
-      return;
    }
 
-   /* Setup this palette*/
-
-   for ( i = 0; i < 64; i++ )
+   /* setup palette presets */
+   else
    {
-      unsigned palette_data = palettes[current_palette].data[i];
-      r = ( palette_data >> 16 ) & 0xff;
-      g = ( ( palette_data & 0xff00 ) >> 8 ) & 0xff;
-      b = ( palette_data & 0xff );
-      FCEUD_SetPalette( i, r, g, b);
-      FCEUD_SetPalette( i + 64, r, g, b);
-      FCEUD_SetPalette( i + 128, r, g, b);
-      FCEUD_SetPalette( i + 192, r, g, b);
+      unsigned *palette_data = palettes[current_palette].data;
+      for ( i = 0; i < 64; i++ )
+      {
+         unsigned data = palette_data[i];
+         base_palette[ i * 3 + 0 ] = ( data >> 16 ) & 0xff; /* red */
+         base_palette[ i * 3 + 1 ] = ( data >>  8 ) & 0xff; /* green */
+         base_palette[ i * 3 + 2 ] = ( data >>  0 ) & 0xff; /* blue */
+      }
+      FCEUI_SetPaletteArray( base_palette );
    }
 
 #if defined(RENDER_GSKIT_PS2)
@@ -948,36 +1080,32 @@ static void retro_set_custom_palette(void)
 void FCEUD_RegionOverride(unsigned region)
 {
    unsigned pal = 0;
+   unsigned d = 0;
 
    switch (region)
    {
       case 0: /* auto */
-         normal_scanlines = 240;
-         dendy = 0;
-         pal = is_PAL;
+         d = (systemRegion >> 1) & 1;
+         pal = systemRegion & 1;
          break;
       case 1: /* ntsc */
-         normal_scanlines = 240;
-         dendy = 0;
-         pal = 0;
-         FCEU_DispMessage("Switched to NTSC");
+         FCEU_DispMessage("System: NTSC");
          break;
       case 2: /* pal */
-         normal_scanlines = 240;
-         dendy = 0;
          pal = 1;
-         FCEU_DispMessage("Switched to PAL");
+         FCEU_DispMessage("System: PAL");
          break;
       case 3: /* dendy */
-         normal_scanlines = 290;
-         dendy = 1;
-         pal = 0;
-         FCEU_DispMessage("Switched to Dendy");
+         d = 1;
+         FCEU_DispMessage("System: Dendy");
          break;
    }
 
+   dendy = d;
+   normal_scanlines = dendy ? 290 : 240;
+   totalscanlines = normal_scanlines + (overclock_enabled ? extrascanlines : 0);
    FCEUI_SetVidSystem(pal);
-   retro_set_custom_palette();
+   ResetPalette();
 }
 
 void retro_deinit (void)
@@ -997,6 +1125,9 @@ void retro_deinit (void)
 #endif
    libretro_supports_bitmasks = false;
    DPSW_Cleanup();
+#ifdef HAVE_NTSC_FILTER
+   NTSCFilter_Cleanup();
+#endif
 }
 
 void retro_reset(void)
@@ -1004,34 +1135,25 @@ void retro_reset(void)
    ResetNES();
 }
 
-typedef struct
-{
-   unsigned retro;
-   unsigned nes;
-} keymap;
-
-
-static const keymap turbomap[] = {
-   { RETRO_DEVICE_ID_JOYPAD_X, JOY_A },
-   { RETRO_DEVICE_ID_JOYPAD_Y, JOY_B },
-};
-
 static void set_apu_channels(int chan)
 {
-   FSettings.SquareVolume[1] = 256 * ((chan >> 0) & 1);
-   FSettings.SquareVolume[0] = 256 * ((chan >> 1) & 1);
-   FSettings.TriangleVolume = 256 * ((chan >> 2) & 1);
-   FSettings.NoiseVolume = 256 * ((chan >> 3) & 1);
-   FSettings.PCMVolume = 256 * ((chan >> 4) & 1);
+   FSettings.SquareVolume[1] = (chan & 1) ? 256 : 0;
+   FSettings.SquareVolume[0] = (chan & 2) ? 256 : 0;
+   FSettings.TriangleVolume  = (chan & 3) ? 256 : 0;
+   FSettings.NoiseVolume     = (chan & 4) ? 256 : 0;
+   FSettings.PCMVolume       = (chan & 5) ? 256 : 0;
 }
 
 static void check_variables(bool startup)
 {
    struct retro_variable var = {0};
-   struct retro_system_av_info av_info;
-   bool geometry_update = false;
+   bool palette_updated = false;
    char key[256];
    int i, enable_apu;
+
+   /* 1 = Performs only geometry update: e.g. overscans */
+   /* 2 = Performs video/geometry update when needed and timing changes: e.g. region and filter change */
+   int audio_video_updated = 0;
 
    var.key = "fceumm_ramstate";
 
@@ -1044,6 +1166,30 @@ static void check_variables(bool startup)
       else
          option_ramstate = 0;
    }
+
+#ifdef HAVE_NTSC_FILTER
+   var.key = "fceumm_ntsc_filter";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      unsigned orig_value = use_ntsc;
+      if (strcmp(var.value, "disabled") == 0)
+         use_ntsc = NTSC_NONE;
+      else if (strcmp(var.value, "composite") == 0)
+         use_ntsc = NTSC_COMPOSITE;
+      else if (strcmp(var.value, "svideo") == 0)
+         use_ntsc = NTSC_SVIDEO;
+      else if (strcmp(var.value, "rgb") == 0)
+         use_ntsc = NTSC_RGB;
+      else if (strcmp(var.value, "monochrome") == 0)
+         use_ntsc = NTSC_MONOCHROME;
+      if (use_ntsc != orig_value)
+      {
+         ResetPalette();
+         audio_video_updated = 2;
+      }
+   }
+#endif /* HAVE_NTSC_FILTER */
 
    var.key = "fceumm_palette";
 
@@ -1091,17 +1237,18 @@ static void check_variables(bool startup)
          current_palette = 15;
 
       if (current_palette != orig_value)
-         retro_set_custom_palette();
+      {
+         audio_video_updated = 1;
+         ResetPalette();
+      }  
    }
 
    var.key = "fceumm_up_down_allowed";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      up_down_allowed = (!strcmp(var.value, "enabled")) ? true : false;
-   }
+      nes_input.up_down_allowed = (!strcmp(var.value, "enabled")) ? true : false;
    else
-      up_down_allowed = false;
+      nes_input.up_down_allowed = false;
 
    var.key = "fceumm_nospritelimit";
 
@@ -1118,33 +1265,33 @@ static void check_variables(bool startup)
       bool do_reinit = false;
 
       if (!strcmp(var.value, "disabled")
-            && overclock_state != 0)
+            && overclock_enabled != 0)
       {
-         overclocked            = 0;
          skip_7bit_overclocking = 1;
          extrascanlines         = 0;
          vblankscanlines        = 0;
-         overclock_state        = 0;
+         overclock_enabled      = 0;
          do_reinit              = true;
       }
       else if (!strcmp(var.value, "2x-Postrender"))
       {
-         overclocked            = 1;
          skip_7bit_overclocking = 1;
          extrascanlines         = 266;
          vblankscanlines        = 0;
-         overclock_state        = 1;
+         overclock_enabled      = 1;
          do_reinit              = true;
       }
       else if (!strcmp(var.value, "2x-VBlank"))
       {
-         overclocked            = 1;
          skip_7bit_overclocking = 1;
          extrascanlines         = 0;
          vblankscanlines        = 266;
-         overclock_state        = 1;
+         overclock_enabled      = 1;
          do_reinit              = true;
       }
+
+      normal_scanlines = dendy ? 290 : 240;
+      totalscanlines = normal_scanlines + (overclock_enabled ? extrascanlines : 0);
 
       if (do_reinit && startup)
       {
@@ -1179,7 +1326,7 @@ static void check_variables(bool startup)
       if (newval != use_overscan)
       {
          use_overscan = newval;
-         geometry_update = true;
+         audio_video_updated = 1;
       }
    }
 
@@ -1192,7 +1339,7 @@ static void check_variables(bool startup)
       if (newval != overscan_h)
       {
          overscan_h = newval;
-         geometry_update = true;
+         audio_video_updated = 1;
       }
    }
 
@@ -1204,58 +1351,10 @@ static void check_variables(bool startup)
       if (newval != overscan_v)
       {
          overscan_v = newval;
-         geometry_update = true;
+         audio_video_updated = 1;
       }
    }
 #endif
-
-   var.key = "fceumm_turbo_enable";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      turbo_enabler[0] = 0;
-      turbo_enabler[1] = 0;
-
-      if (!strcmp(var.value, "Player 1"))
-      {
-         turbo_enabler[0] = 1;
-         turbo_enabler[1] = 0;
-      }
-      else if (!strcmp(var.value, "Player 2"))
-      {
-         turbo_enabler[0] = 0;
-         turbo_enabler[1] = 1;
-      }
-      else if (!strcmp(var.value, "Both"))
-      {
-         turbo_enabler[0] = 1;
-         turbo_enabler[1] = 1;
-      }
-   }
-
-   var.key = "fceumm_turbo_delay";
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      turbo_delay = atoi(var.value);
-   }
-
-   var.key = "fceumm_region";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      unsigned oldval = setregion;
-      if (!strcmp(var.value, "Auto"))
-         setregion = 0;
-      else if (!strcmp(var.value, "NTSC"))
-         setregion = 1;
-      else if (!strcmp(var.value, "PAL"))
-         setregion = 2;
-      else if (!strcmp(var.value, "Dendy"))
-         setregion = 3;
-      if (setregion != oldval)
-         FCEUD_RegionOverride(setregion);
-   }
-
    var.key = "fceumm_aspect";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1264,7 +1363,49 @@ static void check_variables(bool startup)
       if (newval != use_par)
       {
          use_par = newval;
-         geometry_update = true;
+         audio_video_updated = 1;
+      }
+   }
+
+   var.key = "fceumm_turbo_enable";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      nes_input.turbo_enabler[0] = 0;
+      nes_input.turbo_enabler[1] = 0;
+
+      if (!strcmp(var.value, "Player 1"))
+         nes_input.turbo_enabler[0] = 1;
+      else if (!strcmp(var.value, "Player 2"))
+         nes_input.turbo_enabler[1] = 1;
+      else if (!strcmp(var.value, "Both"))
+      {
+         nes_input.turbo_enabler[0] = 1;
+         nes_input.turbo_enabler[1] = 1;
+      }
+   }
+
+   var.key = "fceumm_turbo_delay";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      nes_input.turbo_delay = atoi(var.value);
+
+   var.key = "fceumm_region";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      unsigned oldval = opt_region;
+      if (!strcmp(var.value, "Auto"))
+         opt_region = 0;
+      else if (!strcmp(var.value, "NTSC"))
+         opt_region = 1;
+      else if (!strcmp(var.value, "PAL"))
+         opt_region = 2;
+      else if (!strcmp(var.value, "Dendy"))
+         opt_region = 3;
+      if (opt_region != oldval)
+      {
+         FCEUD_RegionOverride(opt_region);
+         audio_video_updated = 2;
       }
    }
 
@@ -1292,10 +1433,14 @@ static void check_variables(bool startup)
       FCEUD_SoundToggle();
    }
 
-   if (geometry_update)
+   if (audio_video_updated && !startup)
    {
+      struct retro_system_av_info av_info;
       retro_get_system_av_info(&av_info);
-      environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &av_info);
+      if (audio_video_updated == 2)  
+         environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
+      else
+         environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &av_info);
    }
 
    var.key = "fceumm_swapduty";
@@ -1304,15 +1449,12 @@ static void check_variables(bool startup)
    {
       bool newval = (!strcmp(var.value, "enabled"));
       if (newval != swapDuty)
-      {
          swapDuty = newval;
-      }
    }
 
-#ifdef DEBUG
    var.key = key;
 
-   enable_apu = 0;
+   enable_apu = 0xff;
 
    strcpy(key, "fceumm_apu_x");
    for (i = 0; i < 5; i++)
@@ -1320,16 +1462,74 @@ static void check_variables(bool startup)
       key[strlen("fceumm_apu_")] = '1' + i;
       var.value = NULL;
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && !strcmp(var.value, "disabled"))
-      {
-         enable_apu |= (1 << i);
-      }
+         enable_apu &= ~(1 << i);
    }
-   set_apu_channels(enable_apu ^ 0xff);
-#else
-   set_apu_channels(0xff);
-#endif
+   set_apu_channels(enable_apu);
 
    update_dipswitch();
+
+   var.key = "fceumm_show_adv_system_options";
+   var.value = NULL;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      unsigned newval = (!strcmp(var.value, "enabled")) ? 1 : 0;
+      if ((opt_showAdvSystemOptions != newval) || startup)
+      {
+         struct retro_core_option_display option_display;
+         unsigned i;
+         unsigned size;
+         char options_list[][25] = {
+            "fceumm_overclocking",
+            "fceumm_ramstate",
+            "fceumm_nospritelimit",
+            "fceumm_up_down_allowed",
+            "fceumm_show_crosshair"
+         };
+
+         opt_showAdvSystemOptions = newval;
+         option_display.visible = opt_showAdvSystemOptions;
+         size = sizeof(options_list) / sizeof(options_list[0]);
+         for (i = 0; i < size; i++)
+         {
+            option_display.key = options_list[i];
+            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+         }
+      }
+   }
+
+   var.key = "fceumm_show_adv_sound_options";
+   var.value = NULL;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      unsigned newval = (!strcmp(var.value, "enabled")) ? 1 : 0;
+      if ((opt_showAdvSoundOptions != newval) || startup)
+      {
+         struct retro_core_option_display option_display;
+         unsigned i;
+         unsigned size;
+         char options_list[][25] = {
+            "fceumm_sndvolume",
+            "fceumm_sndquality",
+            "fceumm_swapduty",
+            "fceumm_apu_1",
+            "fceumm_apu_2",
+            "fceumm_apu_3",
+            "fceumm_apu_4",
+            "fceumm_apu_5"
+         };
+
+         opt_showAdvSoundOptions = newval;
+         option_display.visible  = opt_showAdvSoundOptions;
+         size = sizeof(options_list) / sizeof(options_list[0]);
+         for (i = 0; i < size; i++)
+         {
+            option_display.key = options_list[i];
+            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
+         }
+      }
+   }
 }
 
 static int mzx = 0, mzy = 0;
@@ -1428,33 +1628,18 @@ void get_mouse_input(unsigned port, uint32_t *zapdata)
    }
 }
 
-/*
- * Flags to keep track of whether turbo
- * buttons toggled on or off.
- *
- * There are two values in array
- * for Turbo A and Turbo B for
- * each player
- */
-
-#define MAX_BUTTONS 8
-#define TURBO_BUTTONS 2
-unsigned char turbo_button_toggle[MAX_PLAYERS][TURBO_BUTTONS] = { {0} };
-
 static void FCEUD_UpdateInput(void)
 {
    unsigned player, port;
 
    poll_cb();
 
-   JSReturn = 0;
-
    /* nes gamepad */
    for (player = 0; player < MAX_PLAYERS; player++)
    {
       int i              = 0;
       uint8_t input_buf  = 0;
-      int player_enabled = (input_type[player] == RETRO_DEVICE_GAMEPAD) || (input_type[player] == RETRO_DEVICE_JOYPAD);
+      int player_enabled = (nes_input.type[player] == RETRO_DEVICE_GAMEPAD) || (nes_input.type[player] == RETRO_DEVICE_JOYPAD);
 
       if (player_enabled)
       {
@@ -1483,16 +1668,6 @@ static void FCEUD_UpdateInput(void)
          }
          else
          {
-            static const keymap bindmap[] = {
-               { RETRO_DEVICE_ID_JOYPAD_A, JOY_A },
-               { RETRO_DEVICE_ID_JOYPAD_B, JOY_B },
-               { RETRO_DEVICE_ID_JOYPAD_SELECT, JOY_SELECT },
-               { RETRO_DEVICE_ID_JOYPAD_START, JOY_START },
-               { RETRO_DEVICE_ID_JOYPAD_UP, JOY_UP },
-               { RETRO_DEVICE_ID_JOYPAD_DOWN, JOY_DOWN },
-               { RETRO_DEVICE_ID_JOYPAD_LEFT, JOY_LEFT },
-               { RETRO_DEVICE_ID_JOYPAD_RIGHT, JOY_RIGHT },
-            };
             for (i = 0; i < MAX_BUTTONS; i++)
                input_buf |= input_cb(player, RETRO_DEVICE_JOYPAD, 0,
                      bindmap[i].retro) ? bindmap[i].nes : 0;
@@ -1509,7 +1684,7 @@ static void FCEUD_UpdateInput(void)
           * been reached.
           */
 
-         if (turbo_enabler[player])
+         if (nes_input.turbo_enabler[player])
          {
             /* Handle Turbo A & B buttons */
             for (i = 0; i < TURBO_BUTTONS; i++)
@@ -1519,7 +1694,7 @@ static void FCEUD_UpdateInput(void)
                   if (!turbo_button_toggle[player][i])
                      input_buf |= turbomap[i].nes;
                   turbo_button_toggle[player][i]++;
-                  turbo_button_toggle[player][i] %= turbo_delay + 1;
+                  turbo_button_toggle[player][i] %= nes_input.turbo_delay + 1;
                }
                else
                   /* If the button is not pressed, just reset the toggle */
@@ -1528,7 +1703,7 @@ static void FCEUD_UpdateInput(void)
          }
       }
 
-      if (!up_down_allowed)
+      if (!nes_input.up_down_allowed)
       {
          if (input_buf & (JOY_UP))
             if (input_buf & (JOY_DOWN))
@@ -1538,28 +1713,28 @@ static void FCEUD_UpdateInput(void)
                input_buf &= ~((JOY_LEFT ) | (JOY_RIGHT));
       }
 
-      JSReturn |= (input_buf & 0xff) << (player << 3);
+      nes_input.JSReturn[player] = input_buf;
    }
 
    /* other inputs*/
    for (port = 0; port < MAX_PORTS; port++)
    {
-      switch (input_type[port])
+      switch (nes_input.type[port])
       {
          case RETRO_DEVICE_ARKANOID:
          case RETRO_DEVICE_ZAPPER:
-            get_mouse_input(port, MouseData[port]);
+            get_mouse_input(port, nes_input.MouseData[port]);
             break;
       }
    }
 
    /* famicom inputs */
-   switch (input_type[4])
+   switch (nes_input.type[4])
    {
       case RETRO_DEVICE_FC_ARKANOID:
       case RETRO_DEVICE_FC_OEKAKIDS:
       case RETRO_DEVICE_FC_SHADOW:
-         get_mouse_input(0, fc_MouseData);
+         get_mouse_input(0, &nes_input.FamicomData);
          break;
    }
 
@@ -1638,7 +1813,7 @@ static void retro_run_blit(uint8_t *gfx)
       if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&ps2) || !ps2) {
          printf("Failed to get HW rendering interface!\n");
          return;
-	   }
+      }
 
       if (ps2->interface_version != RETRO_HW_RENDER_INTERFACE_GSKIT_PS2_VERSION) {
          printf("HW render interface mismatch, expected %u, got %u!\n",
@@ -1663,27 +1838,61 @@ static void retro_run_blit(uint8_t *gfx)
 
    video_cb(buf, width, height, pitch);
 #else
-   incr   += (overscan_h ? 16 : 0);
-   width  -= (overscan_h ? 16 : 0);
-   height -= (overscan_v ? 16 : 0);
-   pitch  -= (overscan_h ? 32 : 0);
-   gfx    += (overscan_v ? ((overscan_h ? 8 : 0) + 256 * 8) : (overscan_h ? 8 : 0));
-
-   if (use_raw_palette)
+#ifdef HAVE_NTSC_FILTER
+   if (use_ntsc)
    {
-      extern uint8 PPU[4];
-      int deemp = (PPU[1] >> 5) << 2;
-      for (y = 0; y < height; y++, gfx += incr)
-         for ( x = 0; x < width; x++, gfx++)
-            fceu_video_out[y * width + x] = retro_palette[*gfx & 0x3F] | deemp;
+      int h_offset, v_offset;
+
+      burst_phase ^= 1;
+      if (ntsc_setup.merge_fields)
+         burst_phase = 0;
+
+      nes_ntsc_blit(&nes_ntsc, (NES_NTSC_IN_T const*)gfx, (NES_NTSC_IN_T *)XDBuf,
+          NES_WIDTH, burst_phase, NES_WIDTH, NES_HEIGHT,
+          ntsc_video_out, NTSC_WIDTH * sizeof(uint16));
+
+      h_offset = overscan_h ?  NES_NTSC_OUT_WIDTH(8) : 0;
+      v_offset = overscan_v ? 8 : 0;
+      width    = overscan_h ? 560 : 602;
+      height   = overscan_v ? 224 : 240;
+      pitch    = width * sizeof(uint16_t);
+
+      {
+         const uint16_t *in = ntsc_video_out + h_offset + NTSC_WIDTH * v_offset;
+         uint16_t *out = fceu_video_out;
+         int y;
+
+         for (y = 0; y < height; y++)
+         {
+            memcpy(out, in, width * sizeof(uint16_t));
+            in += NTSC_WIDTH;
+            out += width;
+         }
+      }
    }
    else
+#endif /* HAVE_NTSC_FILTER */
    {
-      for (y = 0; y < height; y++, gfx += incr)
-         for ( x = 0; x < width; x++, gfx++)
-            fceu_video_out[y * width + x] = retro_palette[*gfx];
-   }
+      incr   += (overscan_h ? 16 : 0);
+      width  -= (overscan_h ? 16 : 0);
+      height -= (overscan_v ? 16 : 0);
+      pitch  -= (overscan_h ? 32 : 0);
+      gfx    += (overscan_v ? ((overscan_h ? 8 : 0) + 256 * 8) : (overscan_h ? 8 : 0));
 
+      if (use_raw_palette)
+      {
+         uint8_t *deemp = XDBuf + (gfx - XBuf);
+         for (y = 0; y < height; y++, gfx += incr, deemp += incr)
+            for (x = 0; x < width; x++, gfx++, deemp++)
+               fceu_video_out[y * width + x] = retro_palette[*gfx & 0x3F] | (*deemp << 2);
+      }
+      else
+      {
+         for (y = 0; y < height; y++, gfx += incr)
+            for (x = 0; x < width; x++, gfx++)
+               fceu_video_out[y * width + x] = retro_palette[*gfx];
+      }
+   }
    video_cb(fceu_video_out, width, height, pitch);
 #endif
 }
@@ -2043,8 +2252,6 @@ static char slash = '\\';
 static char slash = '/';
 #endif
 
-extern uint32_t iNESGameCRC32;
-
 bool retro_load_game(const struct retro_game_info *game)
 {
    unsigned i, j;
@@ -2104,8 +2311,7 @@ bool retro_load_game(const struct retro_game_info *game)
       { 0 },
    };
    size_t desc_base = 64;
-   size_t desc_count = desc_base+4;
-   struct retro_memory_descriptor descs[desc_count];
+   struct retro_memory_descriptor descs[64 + 4];
    struct retro_memory_map        mmaps;
 
    if (!game)
@@ -2120,6 +2326,7 @@ bool retro_load_game(const struct retro_game_info *game)
    sndquality = 0;
    sndvolume = 150;
    swapDuty = 0;
+   dendy = 0;
 
    /* Wii: initialize this or else last variable is passed through
     * when loading another rom causing save state size change. */
@@ -2130,7 +2337,14 @@ bool retro_load_game(const struct retro_game_info *game)
 #if defined(_3DS)
    fceu_video_out = (uint16_t*)linearMemAlign(256 * 240 * sizeof(uint16_t), 128);
 #elif !defined(PSP)
-   fceu_video_out = (uint16_t*)malloc(256 * 240 * sizeof(uint16_t));
+#ifdef HAVE_NTSC_FILTER
+#define FB_WIDTH NTSC_WIDTH
+#define FB_HEIGHT NES_HEIGHT
+#else /* !HAVE_NTSC_FILTER */
+#define FB_WIDTH NES_WIDTH
+#define FB_HEIGHT NES_HEIGHT
+#endif
+   fceu_video_out = (uint16_t*)malloc(FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
 #endif
 
    environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
@@ -2139,6 +2353,8 @@ bool retro_load_game(const struct retro_game_info *game)
       FCEUI_SetBaseDirectory(dir);
    if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &sav_dir) && sav_dir)
       FCEUI_SetSaveDirectory(sav_dir);
+
+   memset(base_palette, 0, sizeof(base_palette));
 
    FCEUI_Initialize();
 
@@ -2160,17 +2376,20 @@ bool retro_load_game(const struct retro_game_info *game)
    }
 
    for (i = 0; i < MAX_PORTS; i++) {
-      FCEUI_SetInput(i, SI_GAMEPAD, &JSReturn, 0);
-      input_type[i] = RETRO_DEVICE_JOYPAD;
+      FCEUI_SetInput(i, SI_GAMEPAD, (uint32_t*)nes_input.JSReturn, 0);
+      nes_input.type[i] = RETRO_DEVICE_JOYPAD;
    }
 
    external_palette_exist = ipalette;
    if (external_palette_exist)
       FCEU_printf(" Loading custom palette: %s%cnes.pal\n", dir, slash);
 
-   is_PAL = retro_get_region(); /* Save current loaded region info */
+   /* Save region and dendy mode for region-auto detect */
+   systemRegion = (dendy << 1) | (retro_get_region() & 1);
 
-   retro_set_custom_palette();
+   current_palette = 0;
+
+   ResetPalette();
    FCEUD_SoundToggle();
    set_variables();
    check_variables(true);
@@ -2180,21 +2399,21 @@ bool retro_load_game(const struct retro_game_info *game)
 
    for (i = 0; i < fourscore_len; i++)
    {
-      if (fourscore_db_list[i].crc == iNESGameCRC32)
+      if (fourscore_db_list[i].crc == iNESCart.CRC32)
       {
          FCEUI_DisableFourScore(0);
-         enable_4player = true;
+         nes_input.enable_4player = true;
          break;
       }
    }
 
    for (i = 0; i < famicom_4p_len; i++)
    {
-      if (famicom_4p_db_list[i].crc == iNESGameCRC32)
+      if (famicom_4p_db_list[i].crc == iNESCart.CRC32)
       {
          GameInfo->inputfc = SIFC_4PLAYER;
-         FCEUI_SetInputFC(SIFC_4PLAYER, &JSReturn, 0);
-         enable_4player = true;
+         FCEUI_SetInputFC(SIFC_4PLAYER, (uint32_t*)nes_input.JSReturn, 0);
+         nes_input.enable_4player = true;
          break;
       }
    }
@@ -2213,8 +2432,9 @@ bool retro_load_game(const struct retro_game_info *game)
          i++;
        }
    }
-   // This doesn't map in 2004--2007 but those aren't really
-   // worthwhile to read from on a vblank anyway
+   /* This doesn't map in 2004--2007 but those aren't really
+    * worthwhile to read from on a vblank anyway
+    */
    descs[i].flags = 0;
    descs[i].ptr = PPU;
    descs[i].offset = 0;
@@ -2224,16 +2444,18 @@ bool retro_load_game(const struct retro_game_info *game)
    descs[i].len = 4;
    descs[i].addrspace="PPUREG";
    i++;
-   // In the future, it would be good to map pattern tables 1 and 2,
-   // but these must be remapped often
+   /* In the future, it would be good to map pattern tables 1 and 2,
+    * but these must be remapped often
+    */
    /* descs[i] = (struct retro_memory_descriptor){0, ????, 0, 0x0000 | PPU_BIT, PPU_BIT, PPU_BIT, 0x1000, "PAT0"}; */
    /* i++; */
    /* descs[i] = (struct retro_memory_descriptor){0, ????, 0, 0x1000 | PPU_BIT, PPU_BIT, PPU_BIT, 0x1000, "PAT1"}; */
    /* i++; */
-   // Likewise it would be better to use "vnapage" for this but
-   // RetroArch API is inconvenient for handles like that, so we'll
-   // just blithely assume the client will handle mapping and that
-   // we'll ignore those carts that have extra NTARAM.
+   /* Likewise it would be better to use "vnapage" for this but
+    * RetroArch API is inconvenient for handles like that, so we'll
+    * just blithely assume the client will handle mapping and that
+    * we'll ignore those carts that have extra NTARAM.
+    */
    descs[i].flags = 0;
    descs[i].ptr = NTARAM;
    descs[i].offset = 0;
@@ -2252,7 +2474,7 @@ bool retro_load_game(const struct retro_game_info *game)
    descs[i].len = 0x020;
    descs[i].addrspace="PALRAM";
    i++;
-   // OAM doesn't really live anywhere in address space so I'll put it at 0x4000.
+   /* OAM doesn't really live anywhere in address space so I'll put it at 0x4000. */
    descs[i].flags = 0;
    descs[i].ptr = SPRAM;
    descs[i].offset = 0;
@@ -2290,6 +2512,9 @@ void retro_unload_game(void)
 #endif
 #if defined(RENDER_GSKIT_PS2)
    ps2 = NULL;
+#endif
+#ifdef HAVE_NTSC_FILTER
+   NTSCFilter_Cleanup();
 #endif
 }
 

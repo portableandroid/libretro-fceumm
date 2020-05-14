@@ -20,6 +20,7 @@
 
 #include "mapinc.h"
 #include "../ines.h"
+#include "../fds_apu.h"
 
 static uint8 latche, latcheinit, bus_conflict;
 static uint16 addrreg0, addrreg1;
@@ -153,30 +154,11 @@ static void CNROMSync(void) {
 }
 
 void CNROM_Init(CartInfo *info) {
-	unsigned _no_busc, _busc;
-
-	_busc = 1; /* by default, CNROM is set to emulate bus conflicts to all games */
-	_no_busc = 0;
-
-	if (GameInfo->cspecial == 1)
-		_no_busc = 1;
-
-	/* TODO: move these to extended database when implemented. */
-	switch (info->CRC32) {
-	case 0xf283cf58: /* Colorful Dragon (Asia) (PAL) (Unl).nes */
-	case 0x2915faf0: /* Incantation (Asia) (Unl).nes */
-	case 0xebd0644d: /* Dao Shuai (Asia) (Unl).nes */
-	case 0x8f154a0d: /* Pu Ke Jing Ling (China) (Unl).nes */
-	case 0xd04a40e6: /* Bingo 75 (Asia) (Unl).nes */
-	case 0xe41b440f: /* Sidewinder (Joy Van) */
-	case 0xb0c871c5: /* Wei Lai Xiao Zi (Joy Van) */
-	case 0xb3be2f71: /* Yanshan Chess (Unl) */
-		_no_busc = 1;
-		break;
-	}
-
-	if (_no_busc == 1) _busc = 0;
-	Latch_Init(info, CNROMSync, 0, 0x8000, 0xFFFF, 1, _busc);
+	uint8 CNROM_busc = 1; /* by default, CNROM is set to emulate bus conflicts to all games. */
+	if (info->submapper && info->submapper == 1) /* no bus conflict */
+		CNROM_busc = 0;
+	FCEU_printf(" Bus Conflict: %s\n", CNROM_busc ? "Yes" : "No");
+	Latch_Init(info, CNROMSync, 0, 0x8000, 0xFFFF, 1, CNROM_busc);
 }
 
 /*------------------ Map 7 ---------------------------*/
@@ -488,6 +470,52 @@ static void M241Sync(void) {
 
 void Mapper241_Init(CartInfo *info) {
 	Latch_Init(info, M241Sync, 0, 0x8000, 0xFFFF, 1, 0);
+}
+
+/*------------------ Map 381 ---------------------------*/
+/* 2-in-1 High Standard Game (BC-019), reset-based */
+static uint8 reset = 0;
+static void M381Sync(void) {
+	setprg16(0x8000, ((latche & 0x10) >> 4) | ((latche & 7) << 1) | (reset << 4));
+	setprg16(0xC000, 15 | (reset << 4));
+	setchr8(0);
+}
+
+static void M381Reset(void) {
+	reset ^= 1;
+	M381Sync();
+}
+
+void Mapper381_Init(CartInfo *info) {
+	info->Reset = M381Reset;
+	Latch_Init(info, M381Sync, 0, 0x8000, 0xFFFF, 1, 0);
+	AddExState(&reset, 1, 0, "RST0");
+}
+
+/*------------------ Map 538 ---------------------------*/
+/* NES 2.0 Mapper 538 denotes the 60-1064-16L PCB, used for a
+ * bootleg cartridge conversion named Super Soccer Champion
+ * of the Konami FDS game Exciting Soccer.
+ */
+static uint8 M538Banks[16] = { 0, 1, 2, 1, 3, 1, 4, 1, 5, 5, 1, 1, 6, 6, 7, 7 };
+static void M538Sync(void) {
+	setprg8(0x6000, (latche >> 1) | 8);
+	setprg8(0x8000, M538Banks[latche & 15]);
+	setprg8(0xA000, 14);
+	setprg8(0xC000, 7);
+	setprg8(0xE000, 15);
+	setchr8(0);
+	setmirror(1);
+}
+
+static void M538Power(void) {
+	FDSSoundPower();
+	LatchPower();
+}
+
+void Mapper538_Init(CartInfo *info) {
+	Latch_Init(info, M538Sync, 0, 0xC000, 0xCFFF, 1, 0);
+	info->Power = M538Power;
 }
 
 /* ------------------ A65AS --------------------------- */
