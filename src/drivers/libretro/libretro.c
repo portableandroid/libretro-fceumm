@@ -955,7 +955,7 @@ void retro_get_system_info(struct retro_system_info *info)
    info->need_fullpath    = false;
    info->valid_extensions = "fds|nes|unf|unif";
 #ifdef GIT_VERSION
-   info->library_version  = "(SVN)" GIT_VERSION;
+   info->library_version  = STRINGIZE_VALUE_OF(GIT_VERSION);
 #else
    info->library_version  = "(SVN)";
 #endif
