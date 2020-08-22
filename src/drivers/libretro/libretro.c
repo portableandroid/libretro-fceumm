@@ -1312,9 +1312,6 @@ static void check_variables(bool startup)
       FCEU_ZapperSetTolerance(atoi(var.value));
    }
 
-   var.key = "fceumm_region";
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-
    var.key = "fceumm_show_crosshair";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
