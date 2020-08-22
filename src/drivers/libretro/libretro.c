@@ -64,6 +64,8 @@ void linearFree(void* mem);
 RETRO_HW_RENDER_INTEFACE_GSKIT_PS2 *ps2 = NULL;
 #endif
 
+extern void FCEU_ZapperSetTolerance(int t);
+
 static retro_video_refresh_t video_cb = NULL;
 static retro_input_poll_t poll_cb = NULL;
 static retro_input_state_t input_cb = NULL;
@@ -125,9 +127,9 @@ typedef struct {
    uint32_t type[MAX_PLAYERS + 1];     /* 4-players + famicom expansion */
 
    /* input data */
-   uint8_t JSReturn[MAX_PLAYERS];      /* 1-4 player data */
+   uint32_t JSReturn;                  /* player input data, 1 byte per player (1-4) */
    uint32_t MouseData[MAX_PORTS][3];   /* nes mouse data */
-   uint32_t FamicomData;               /* Famicom expansion port data */
+   uint32_t FamicomData[3];            /* Famicom expansion port data */
 } NES_INPUT_T;
 
 static NES_INPUT_T nes_input = { 0 };
@@ -753,7 +755,7 @@ static void update_nes_controllers(unsigned port, unsigned device)
       case RETRO_DEVICE_GAMEPAD:
       default:
          nes_input.type[port] = RETRO_DEVICE_GAMEPAD;
-         FCEUI_SetInput(port, SI_GAMEPAD, (uint32_t*)nes_input.JSReturn, 0);
+         FCEUI_SetInput(port, SI_GAMEPAD, &nes_input.JSReturn, 0);
          FCEU_printf(" Player %u: Gamepad\n", port + 1);
          break;
       }
@@ -776,7 +778,7 @@ static void update_nes_controllers(unsigned port, unsigned device)
          FCEU_printf(" Famicom Expansion: Oeka Kids Tablet\n");
          break;
       case RETRO_DEVICE_FC_4PLAYERS:
-         FCEUI_SetInputFC(SIFC_4PLAYER, (uint32_t*)nes_input.JSReturn, 0);
+         FCEUI_SetInputFC(SIFC_4PLAYER, &nes_input.JSReturn, 0);
          FCEU_printf(" Famicom Expansion: Famicom 4-Player Adapter\n");
          break;
       case RETRO_DEVICE_NONE:
@@ -1065,12 +1067,6 @@ static void retro_set_custom_palette(void)
       }
       FCEUI_SetPaletteArray( base_palette );
    }
-
-#if defined(RENDER_GSKIT_PS2)
-   if (ps2) {
-      ps2->updatedPalette = true;
-   }
-#endif
 }
 
 /* Set variables for NTSC(1) / PAL(2) / Dendy(3)
@@ -1308,6 +1304,16 @@ static void check_variables(bool startup)
       else if (!strcmp(var.value, "touchscreen")) zappermode = RetroPointer;
       else zappermode = RetroLightgun; /*default setting*/
    }
+
+   var.key = "fceumm_zapper_tolerance";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      FCEU_ZapperSetTolerance(atoi(var.value));
+   }
+
+   var.key = "fceumm_region";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 
    var.key = "fceumm_show_crosshair";
 
@@ -1634,6 +1640,9 @@ static void FCEUD_UpdateInput(void)
 
    poll_cb();
 
+   /* Reset input states */
+   nes_input.JSReturn = 0;
+
    /* nes gamepad */
    for (player = 0; player < MAX_PLAYERS; player++)
    {
@@ -1713,7 +1722,7 @@ static void FCEUD_UpdateInput(void)
                input_buf &= ~((JOY_LEFT ) | (JOY_RIGHT));
       }
 
-      nes_input.JSReturn[player] = input_buf;
+      nes_input.JSReturn |= (input_buf & 0xff) << (player << 3);
    }
 
    /* other inputs*/
@@ -1832,7 +1841,6 @@ static void retro_run_blit(uint8_t *gfx)
                                                    overscan_h ? 8.0f : 0.0f};
    }
 
-   ps2->updatedPalette = true;
    ps2->coreTexture->Clut = (u32*)retro_palette;
    ps2->coreTexture->Mem = (u32*)gfx;
 
@@ -2059,6 +2067,10 @@ static const struct cartridge_db fourscore_db_list[] =
    {
       "M.U.L.E. (USA)",
       0x0939852f
+   },
+   {
+      "Micro Mages",
+      0x4e6b9078
    },
    {
       "Monster Truck Rally (USA)",
@@ -2376,7 +2388,7 @@ bool retro_load_game(const struct retro_game_info *game)
    }
 
    for (i = 0; i < MAX_PORTS; i++) {
-      FCEUI_SetInput(i, SI_GAMEPAD, (uint32_t*)nes_input.JSReturn, 0);
+      FCEUI_SetInput(i, SI_GAMEPAD, &nes_input.JSReturn, 0);
       nes_input.type[i] = RETRO_DEVICE_JOYPAD;
    }
 
@@ -2412,7 +2424,7 @@ bool retro_load_game(const struct retro_game_info *game)
       if (famicom_4p_db_list[i].crc == iNESCart.CRC32)
       {
          GameInfo->inputfc = SIFC_4PLAYER;
-         FCEUI_SetInputFC(SIFC_4PLAYER, (uint32_t*)nes_input.JSReturn, 0);
+         FCEUI_SetInputFC(SIFC_4PLAYER, &nes_input.JSReturn, 0);
          nes_input.enable_4player = true;
          break;
       }
