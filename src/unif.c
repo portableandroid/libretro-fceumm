@@ -138,6 +138,11 @@ static void ResetUNIF(void) {
 	VROM_size = 0;
 }
 
+static void Cleanup(void) {
+	FreeUNIF();
+	ResetUNIF();
+}
+
 static uint8 exntar[2048];
 
 static void MooMirroring(void) {
@@ -359,9 +364,9 @@ struct _unif_db {
 };
 
 static struct _unif_db unif_db[] = {
-	{ 0x8ebad077d08e6c78ULL, "A65AS",          1,   -1 }, /* 3-in-1 (N080) [p1][U][!], not a real submapper */
-	{ 0x616851e56946893bULL, "RESETNROM-XIN1", 0, MI_V }, /* Sheng Tian 2-in-1(Unl,ResetBase)[p1].unf */
-	{ 0x4cd729b5ae23a3cfULL, "RESETNROM-XIN1", 0, MI_H }, /* Sheng Tian 2-in-1(Unl,ResetBase)[p2].unf */
+	{ 0x8ebad077d08e6c78ULL, "A65AS",          1,   -1, -1 }, /* 3-in-1 (N080) [p1][U][!], not a real submapper */
+	{ 0x616851e56946893bULL, "RESETNROM-XIN1", 0, MI_V, -1 }, /* Sheng Tian 2-in-1(Unl,ResetBase)[p1].unf */
+	{ 0x4cd729b5ae23a3cfULL, "RESETNROM-XIN1", 0, MI_H, -1 }, /* Sheng Tian 2-in-1(Unl,ResetBase)[p2].unf */
 
 	{ 0, NULL, -1, -1, -1 } /* end of the line */
 };
@@ -416,7 +421,7 @@ static void CheckHashInfo(void) {
 static BMAPPING bmap[] = {
 	{ "11160",                      299, BMC11160_Init,         0 },
 	{ "12-IN-1",                    331, BMC12IN1_Init,         0 },
-	{ "13in1JY110",                 295, BMC13in1JY110_Init,    0 },
+	{ "13in1JY110",                 295, Mapper295_Init,        0 },
 	{ "190in1",                     300, BMC190in1_Init,        0 },
 	{ "22211",                      132, Mapper132_Init,        0 },
 	{ "3D-BLOCK",                   355, UNL3DBlock_Init,       0 },
@@ -433,7 +438,7 @@ static BMAPPING bmap[] = {
 	{ "8237A",                      215, UNL8237A_Init,         0 },
 	{ "830118C",                    348, BMC830118C_Init,       0 },
 	{ "A65AS",                      285, BMCA65AS_Init,         0 },
-	{ "AB-G1L",                 NO_INES, AbG1l_Init,            0 },
+	{ "AB-G1L",                     428, Mapper428_Init,        0 },
 	{ "AC08",                        42, AC08_Init,             0 },
 	{ "ANROM",                        7, ANROM_Init,            0 },
 	{ "AX5705",                     530, UNLAX5705_Init,        0 },
@@ -446,6 +451,7 @@ static BMAPPING bmap[] = {
 	{ "CNROM",                        3, CNROM_Init,            0 },
 	{ "CPROM",                       13, CPROM_Init,            BMCFLAG_16KCHRR },
 	{ "D1038",                       59, BMCD1038_Init,         0 },
+	{ "T3H53",                       59, BMCD1038_Init,         0 },
 	{ "DANCE",                      256, UNLOneBus_Init,        0 },
 	{ "DANCE2000",                  518, UNLD2000_Init,         0 },
 	{ "DREAMTECH01",                521, DreamTech01_Init,      0 },
@@ -456,7 +462,7 @@ static BMAPPING bmap[] = {
 	{ "EWROM",                        5, EWROM_Init,            0 },
 	{ "FK23C",                      176, BMCFK23C_Init,         BMCFLAG_256KCHRR },
 	{ "FK23CA",                     176, BMCFK23CA_Init,        BMCFLAG_256KCHRR },
-	{ "FS304",                      162, UNLFS304_Init,         0 },
+	{ "FS304",                      162, Mapper162_Init,        0 },
 	{ "G-146",                      349, BMCG146_Init,          0 },
 	{ "GK-192",                 NO_INES, BMCGK192_Init,         0 }, /* mapper 58? */
 	{ "GS-2004",                    283, BMCGS2004_Init,        0 },
@@ -504,7 +510,7 @@ static BMAPPING bmap[] = {
 	{ "SA-NROM",                    143, TCA01_Init,            0 },
 	{ "SAROM",                        1, SAROM_Init,            0 },
 	{ "SBROM",                        1, SBROM_Init,            0 },
-	{ "SC-127",                      35, UNLSC127_Init,         0 },
+	{ "SC-127",                      35, Mapper35_Init,         0 },
 	{ "SCROM",                        1, SCROM_Init,            0 },
 	{ "SEROM",                        1, SEROM_Init,            0 },
 	{ "SGROM",                        1, SGROM_Init,            0 },
@@ -553,7 +559,8 @@ static BMAPPING bmap[] = {
 	{ "UNROM-512-32",                30, UNROM512_Init,         BMCFLAG_32KCHRR },
 	{ "UOROM",                        2, UNROM_Init,            0 },
 	{ "VRC7",                        85, UNLVRC7_Init,          0 },
-	{ "WELL-NO-DG450",          NO_INES, WellNoDG450_Init,      0 },
+	{ "WELL-NO-DG450",              428, Mapper428_Init,        0 },
+	{ "TF2740",                     428, Mapper428_Init,        0 },	
 	{ "YOKO",                       264, UNLYOKO_Init,          0 },
 	{ "COOLBOY",                    268, COOLBOY_Init,          BMCFLAG_256KCHRR },
 	{ "158B",                       258, UNL158B_Init,          0 },
@@ -609,6 +616,9 @@ static BMAPPING bmap[] = {
 	{ "SB-5013",                    359, Mapper359_Init,        0 },
 	{ "82112C",                     540, Mapper540_Init,        0 },
 	{ "N49C-300",                   369, Mapper369_Init,        0 },
+
+	{ "BS-400R",                    422, Mapper422_Init,        0 },
+	{ "BS-4040R",                   422, Mapper422_Init,        0 },
 
 #ifdef COPYFAMI
 	{ "COPYFAMI_MMC3",          NO_INES, MapperCopyFamiMMC3_Init, 0 },
@@ -691,7 +701,7 @@ static int InitializeBoard(void) {
 				mirrortodo = 4;
 			MooMirroring();
 
-			UNIFCart.submapper = bmap[x].ines_mapper;
+			UNIFCart.mapper    = bmap[x].ines_mapper;
 			UNIFCart.submapper = submapper;
 			GameInfo->cspecial = cspecial;
 
@@ -700,7 +710,8 @@ static int InitializeBoard(void) {
 		}
 		x++;
 	}
-	FCEU_PrintError("Board type not supported, '%s'.", boardname);
+	FCEU_printf("\n");
+	FCEU_PrintError(" Board type not supported, '%s'.\n", boardname);
 	return(0);
 }
 
@@ -725,8 +736,8 @@ static void UNIFGI(int h) {
 
 int UNIFLoad(const char *name, FCEUFILE *fp) {
 	struct md5_context md5;
-	uint32 x = 0;
-	uint64 PRGptr = 0, CHRptr = 0;
+	uint64 prg_size_bytes = 0, chr_size_bytes = 0;
+	int x = 0;
 
 	FCEU_fseek(fp, 0, SEEK_SET);
 	FCEU_fread(&unhead, 1, 4, fp);
@@ -737,12 +748,18 @@ int UNIFLoad(const char *name, FCEUFILE *fp) {
 
 	ResetExState(0, 0);
 	ResetUNIF();
-	if (!FCEU_read32le(&unhead.info, fp))
-		goto aborto;
-	if (FCEU_fseek(fp, 0x20, SEEK_SET) < 0)
-		goto aborto;
-	if (!LoadUNIFChunks(fp))
-		goto aborto;
+	if (!FCEU_read32le(&unhead.info, fp)) {
+		Cleanup();
+		return 0;
+	}
+	if (FCEU_fseek(fp, 0x20, SEEK_SET) < 0) {
+		Cleanup();
+		return 0;
+	}
+	if (!LoadUNIFChunks(fp)) {
+		Cleanup();
+		return 0;
+	}
 
 	ROM_size = (UNIF_PRGROMSize / 0x1000) + ((UNIF_PRGROMSize % 0x1000) ? 1 : 0);
 	ROM_size = (ROM_size >> 2) + ((ROM_size & 3) ? 1: 0);
@@ -751,73 +768,84 @@ int UNIFLoad(const char *name, FCEUFILE *fp) {
 		VROM_size = (VROM_size >> 3) + ((VROM_size & 7) ? 1: 0);
 	}
 
-	UNIFCart.PRGRomSize = UNIF_PRGROMSize;
-	UNIFCart.CHRRomSize = UNIF_CHRROMSize;
-
 	UNIF_PRGROMSize = FixRomSize(UNIF_PRGROMSize, 2048);
 	if (UNIF_CHRROMSize)
 		UNIF_CHRROMSize = FixRomSize(UNIF_CHRROMSize, 8192);
 
-	ROM = (uint8*)malloc(UNIF_PRGROMSize);
-	if (UNIF_CHRROMSize)
-		VROM = (uint8*)malloc(UNIF_CHRROMSize);
+	/* Note: Use rounded size for memory allocations and board mapping */
+
+	if (!(ROM = (uint8*)malloc(UNIF_PRGROMSize))) {
+		Cleanup();
+		return 0;
+	}
+	if (UNIF_CHRROMSize) {
+		if (!(VROM = (uint8*)malloc(UNIF_CHRROMSize))) {
+			Cleanup();
+			return 0;
+		}
+	}
+
+	/* combine multiple prg/chr blocks into single blocks and free memory used. */
 
 	for (x = 0; x < 16; x++) {
-		unsigned p = prg_idx[x];
-		unsigned c = 16 + chr_idx[x];
+		int p = prg_idx[x];
+		int c = 16 + chr_idx[x];
 		if (malloced[p]) {
-			memcpy(ROM + PRGptr, malloced[p], mallocedsizes[p]);
-			PRGptr += mallocedsizes[p];
+			memcpy(ROM + prg_size_bytes, malloced[p], mallocedsizes[p]);
+			prg_size_bytes += mallocedsizes[p];
 			free(malloced[p]);
 			malloced[p] = 0;
 		}
 
 		if (malloced[c]) {
-			memcpy(VROM + CHRptr, malloced[c], mallocedsizes[c]);
-			CHRptr += mallocedsizes[c];
+			memcpy(VROM + chr_size_bytes, malloced[c], mallocedsizes[c]);
+			chr_size_bytes += mallocedsizes[c];
 			free(malloced[c]);
 			malloced[c] = 0;
 		}
 	}
 
-	UNIFCart.PRGCRC32 = CalcCRC32(0, ROM, PRGptr);
-	UNIFCart.CHRCRC32 = CalcCRC32(0, VROM, CHRptr);
-	UNIFCart.CRC32    = CalcCRC32(UNIFCart.PRGCRC32, VROM, CHRptr);
+	/* Note: Use raw size in bytes for checksums */
+
+	UNIFCart.PRGRomSize = prg_size_bytes;
+	UNIFCart.CHRRomSize = chr_size_bytes;
+
+	UNIFCart.PRGCRC32   = CalcCRC32(0, ROM, prg_size_bytes);
+	UNIFCart.CHRCRC32   = CalcCRC32(0, VROM, chr_size_bytes);
+	UNIFCart.CRC32      = CalcCRC32(UNIFCart.PRGCRC32, VROM, chr_size_bytes);
 
 	md5_starts(&md5);
-	md5_update(&md5, ROM, PRGptr);
-	if (UNIF_CHRROMSize)
-		md5_update(&md5, VROM, CHRptr);
+	md5_update(&md5, ROM, prg_size_bytes);
+	if (chr_size_bytes)
+		md5_update(&md5, VROM, chr_size_bytes);
 	md5_finish(&md5, UNIFCart.MD5);
 	memcpy(GameInfo->MD5, UNIFCart.MD5, sizeof(UNIFCart.MD5));
 
 	CheckHashInfo();
 
+	/* Note: Use rounded size for board mappings */
+
 	SetupCartPRGMapping(0, ROM, UNIF_PRGROMSize, 0);
 	if (UNIF_CHRROMSize)
 		SetupCartCHRMapping(0, VROM, UNIF_CHRROMSize, 0);
 
-	if (!InitializeBoard())
-		goto aborto;
+	FCEU_printf(" PRG-ROM CRC32: 0x%08X\n", UNIFCart.PRGCRC32);
+	FCEU_printf(" PRG+CHR CRC32: 0x%08X\n", UNIFCart.CRC32);
+	FCEU_printf(" PRG+CHR MD5  : 0x%s\n", md5_asciistr(UNIFCart.MD5));
 
-	FCEU_printf(" PRG-ROM CRC32:   0x%08X\n", UNIFCart.PRGCRC32);
-	FCEU_printf(" PRG+CHR CRC32:   0x%08X\n", UNIFCart.CRC32);
-	FCEU_printf(" PRG+CHR MD5  :   0x%s\n", md5_asciistr(UNIFCart.MD5));
-	if (UNIFCart.mapper)
-		FCEU_printf(" [Unif] Mapper:    %d\n", UNIFCart.mapper);
-	FCEU_printf(" [Unif] SubMapper: %d\n", UNIFCart.submapper);
-	FCEU_printf(" [Unif] PRG ROM:   %u KiB\n", UNIFCart.PRGRomSize / 1024);
-	FCEU_printf(" [Unif] CHR ROM:   %u KiB\n", UNIFCart.CHRRomSize / 1024);
+	if (!InitializeBoard()) {
+		Cleanup();
+		return 0;
+	}
+
+	FCEU_printf(" [UNIF] PRG ROM: %u KiB\n", UNIFCart.PRGRomSize / 1024);
+	FCEU_printf(" [UNIF] CHR ROM: %u KiB\n", UNIFCart.CHRRomSize / 1024);
+	FCEU_printf(" [UNIF] iNES Mapper: %d\n", UNIFCart.mapper);
+	FCEU_printf(" [UNIF] SubMapper: %d\n", UNIFCart.submapper);
 
 	GameInterface = UNIFGI;
 
 	return 1;
-
- aborto:
-
-	FreeUNIF();
-	ResetUNIF();
-	return 0;
 }
 
 int CopyFamiLoad() {
@@ -825,15 +853,11 @@ int CopyFamiLoad() {
 	ResetExState(0, 0);
 
 	sboardname = (uint8_t*)"COPYFAMI";
-	if (!InitializeBoard())
-		goto aborto;
+	if (!InitializeBoard()) {
+		Cleanup();
+		return 0;
+	}
 
 	GameInterface = UNIFGI;
 	return 1;
-
- aborto:
-
-	FreeUNIF();
-	ResetUNIF();
-	return 0;
 }

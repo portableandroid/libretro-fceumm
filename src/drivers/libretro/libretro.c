@@ -3,8 +3,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
 
 #include <libretro.h>
+#include <compat/fopen_utf8.h>
 #include <streams/memory_stream.h>
 #include <libretro_dipswitch.h>
 #include <libretro_core_options.h>
@@ -27,6 +29,10 @@
 #include "../../vsuni.h"
 #include "../../video.h"
 
+#ifdef PSP
+#include "pspgu.h"
+#endif
+
 #if defined(RENDER_GSKIT_PS2)
 #include "libretro-common/include/libretro_gskit_ps2.h"
 #endif
@@ -48,12 +54,14 @@
 #define RETRO_DEVICE_FC_OEKAKIDS RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  3)
 #define RETRO_DEVICE_FC_SHADOW   RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  4)
 #define RETRO_DEVICE_FC_4PLAYERS RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 2)
+#define RETRO_DEVICE_FC_HYPERSHOT RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 3)
 #define RETRO_DEVICE_FC_AUTO     RETRO_DEVICE_JOYPAD
 
 #define NES_WIDTH   256
 #define NES_HEIGHT  240
 #define NES_8_7_PAR  ((width * (8.0 / 7.0)) / height)
 #define NES_4_3      ((width / (height * (256.0 / 240.0))) * 4.0 / 3.0)
+#define NES_PP       ((width / (height * (256.0 / 240.0))) * 16.0 / 15.0)
 
 #if defined(_3DS)
 void* linearMemAlign(size_t size, size_t alignment);
@@ -72,14 +80,14 @@ static retro_input_state_t input_cb = NULL;
 static retro_audio_sample_batch_t audio_batch_cb = NULL;
 retro_environment_t environ_cb = NULL;
 #ifdef PSP
-static bool use_overscan;
+static bool crop_overscan;
 #else
-static bool overscan_h;
-static bool overscan_v;
+static bool crop_overscan_h;
+static bool crop_overscan_v;
 #endif
 
 static bool use_raw_palette;
-static bool use_par;
+static int aspect_ratio_par;
 
 /*
  * Flags to keep track of whether turbo
@@ -161,9 +169,7 @@ static unsigned opt_region = 0;
 static unsigned opt_showAdvSoundOptions = 0;
 static unsigned opt_showAdvSystemOptions = 0;
 
-int FCEUnetplay;
-#ifdef PSP
-#include "pspgu.h"
+#if defined(PSP) || defined(PS2)
 static __attribute__((aligned(16))) uint16_t retro_palette[256];
 #else
 static uint16_t retro_palette[256];
@@ -185,9 +191,6 @@ static uint32_t Dummy = 0;
 static uint32_t current_palette = 0;
 static unsigned serialize_size;
 
-int PPUViewScanline=0;
-int PPUViewer=0;
-
 /* extern forward decls.*/
 extern FCEUGI *GameInfo;
 extern uint8 *XBuf;
@@ -198,16 +201,9 @@ extern int option_ramstate;
 
 /* emulator-specific callback functions */
 
-void UpdatePPUView(int refreshchr) { }
-
 const char * GetKeyboard(void)
 {
    return "";
-}
-
-int FCEUD_SendData(void *data, uint32 len)
-{
-   return 1;
 }
 
 #define BUILD_PIXEL_RGB565(R,G,B) (((int) ((R)&0x1f) << RED_SHIFT) | ((int) ((G)&0x3f) << GREEN_SHIFT) | ((int) ((B)&0x1f) << BLUE_SHIFT))
@@ -269,15 +265,6 @@ void FCEUD_SetPalette(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
 #endif
 }
 
-void FCEUD_GetPalette(unsigned char i, unsigned char *r, unsigned char *g, unsigned char *b)
-{
-}
-
-bool FCEUD_ShouldDrawInputAids (void)
-{
-   return 1;
-}
-
 static struct retro_log_callback log_cb;
 
 static void default_logger(enum retro_log_level level, const char *fmt, ...) {}
@@ -299,23 +286,16 @@ void FCEUD_DispMessage(char *m)
    environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
 }
 
-void FCEUD_NetworkClose(void)
-{ }
-
 void FCEUD_SoundToggle (void)
 {
    FCEUI_SetSoundVolume(sndvolume);
 }
 
-void FCEUD_VideoChanged (void)
-{ }
-
 FILE *FCEUD_UTF8fopen(const char *n, const char *m)
 {
    if (n)
-      return fopen(n, m);
-   else
-      return NULL;
+      return fopen_utf8(n, m);
+   return NULL;
 }
 
 /*palette for FCEU*/
@@ -636,7 +616,7 @@ struct st_palettes palettes[] = {
 #define NTSC_RGB        3
 #define NTSC_MONOCHROME 4
 
-#define NTSC_WIDTH      602
+#define NES_NTSC_WIDTH  (((NES_NTSC_OUT_WIDTH(256) + 3) >> 2) << 2)
 
 static unsigned use_ntsc = 0;
 static unsigned burst_phase;
@@ -655,7 +635,7 @@ static void NTSCFilter_Init(void)
 {
    memset(&nes_ntsc, 0, sizeof(nes_ntsc));
    memset(&ntsc_setup, 0, sizeof(ntsc_setup));
-   ntsc_video_out = (uint16_t *)malloc(NTSC_WIDTH * NES_HEIGHT * sizeof(uint16_t));
+   ntsc_video_out = (uint16_t *)malloc(NES_NTSC_WIDTH * NES_HEIGHT * sizeof(uint16_t));
 }
 
 static void NTSCFilter_Setup(void)
@@ -766,20 +746,24 @@ static void update_nes_controllers(unsigned port, unsigned device)
       switch (device)
       {
       case RETRO_DEVICE_FC_ARKANOID:
-         FCEUI_SetInputFC(SIFC_ARKANOID, &nes_input.FamicomData, 0);
+         FCEUI_SetInputFC(SIFC_ARKANOID, nes_input.FamicomData, 0);
          FCEU_printf(" Famicom Expansion: Arkanoid\n");
          break;
       case RETRO_DEVICE_FC_SHADOW:
-         FCEUI_SetInputFC(SIFC_SHADOW, &nes_input.FamicomData, 1);
+         FCEUI_SetInputFC(SIFC_SHADOW, nes_input.FamicomData, 1);
          FCEU_printf(" Famicom Expansion: (Bandai) Hyper Shot\n");
          break;
       case RETRO_DEVICE_FC_OEKAKIDS:
-         FCEUI_SetInputFC(SIFC_OEKAKIDS, &nes_input.FamicomData, 1);
+         FCEUI_SetInputFC(SIFC_OEKAKIDS, nes_input.FamicomData, 1);
          FCEU_printf(" Famicom Expansion: Oeka Kids Tablet\n");
          break;
       case RETRO_DEVICE_FC_4PLAYERS:
          FCEUI_SetInputFC(SIFC_4PLAYER, &nes_input.JSReturn, 0);
          FCEU_printf(" Famicom Expansion: Famicom 4-Player Adapter\n");
+         break;
+      case RETRO_DEVICE_FC_HYPERSHOT:
+         FCEUI_SetInputFC(SIFC_HYPERSHOT, nes_input.FamicomData, 0);
+         FCEU_printf(" Famicom Expansion: Konami Hyper Shot\n");
          break;
       case RETRO_DEVICE_NONE:
       default:
@@ -823,6 +807,8 @@ static unsigned fc_to_libretro(int d)
       return RETRO_DEVICE_FC_OEKAKIDS;
    case SIFC_4PLAYER:
       return RETRO_DEVICE_FC_4PLAYERS;
+   case SIFC_HYPERSHOT:
+      return RETRO_DEVICE_FC_HYPERSHOT;
    }
 
    return (RETRO_DEVICE_NONE);
@@ -934,6 +920,7 @@ void retro_set_environment(retro_environment_t cb)
       { "Auto",                  RETRO_DEVICE_FC_AUTO },
       { "Arkanoid",              RETRO_DEVICE_FC_ARKANOID },
       { "(Bandai) Hyper Shot",   RETRO_DEVICE_FC_SHADOW },
+      { "(Konami) Hyper Shot",   RETRO_DEVICE_FC_HYPERSHOT },
       { "Oeka Kids Tablet",      RETRO_DEVICE_FC_OEKAKIDS },
       { "4-Player Adapter",      RETRO_DEVICE_FC_4PLAYERS },
       { 0, 0 },
@@ -944,7 +931,7 @@ void retro_set_environment(retro_environment_t cb)
       { pads2, 4 },
       { pads3, 2 },
       { pads4, 2 },
-      { pads5, 5 },
+      { pads5, 6 },
       { 0, 0 },
    };
 
@@ -965,25 +952,35 @@ void retro_get_system_info(struct retro_system_info *info)
    info->block_extract    = false;
 }
 
+static float get_aspect_ratio(unsigned width, unsigned height)
+{
+  if (aspect_ratio_par == 2)
+    return NES_4_3;
+  else if (aspect_ratio_par == 3)
+    return NES_PP;
+  else
+    return NES_8_7_PAR;
+}
+
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
 #ifdef PSP
-   unsigned width  = NES_WIDTH - (use_overscan ? 16 : 0);
-   unsigned height = NES_HEIGHT - (use_overscan ? 16 : 0);
+   unsigned width  = NES_WIDTH  - (crop_overscan ? 16 : 0);
+   unsigned height = NES_HEIGHT - (crop_overscan ? 16 : 0);
 #else
-   unsigned width  = NES_WIDTH - (overscan_h ? 16 : 0);
-   unsigned height = NES_HEIGHT - (overscan_v ? 16 : 0);
+   unsigned width  = NES_WIDTH  - (crop_overscan_h ? 16 : 0);
+   unsigned height = NES_HEIGHT - (crop_overscan_v ? 16 : 0);
 #endif
 #ifdef HAVE_NTSC_FILTER
    info->geometry.base_width = (use_ntsc ? NES_NTSC_OUT_WIDTH(width) : width);
-   info->geometry.max_width = (use_ntsc ? NTSC_WIDTH : NES_WIDTH);
+   info->geometry.max_width = (use_ntsc ? NES_NTSC_WIDTH : NES_WIDTH);
 #else
    info->geometry.base_width = width;
    info->geometry.max_width = NES_WIDTH;
 #endif
    info->geometry.base_height = height;
    info->geometry.max_height = NES_HEIGHT;
-   info->geometry.aspect_ratio = (float)(use_par ? NES_8_7_PAR : NES_4_3);
+   info->geometry.aspect_ratio = get_aspect_ratio(width, height);
    info->timing.sample_rate = (float)sndsamplerate;
    if (FSettings.PAL || dendy)
       info->timing.fps = 838977920.0/16777215.0;
@@ -1001,17 +998,10 @@ static void check_system_specs(void)
 void retro_init(void)
 {
    bool achievements = true;
-   enum retro_pixel_format rgb565;
    log_cb.log=default_logger;
    environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_cb);
 
    environ_cb(RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS, &achievements);
-
-#ifdef FRONTEND_SUPPORTS_RGB565
-   rgb565 = RETRO_PIXEL_FORMAT_RGB565;
-   if(environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &rgb565))
-      log_cb.log(RETRO_LOG_INFO, "Frontend supports RGB565 - will use that instead of XRGB1555.\n");
-#endif
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
       libretro_supports_bitmasks = true;
@@ -1073,7 +1063,7 @@ static void retro_set_custom_palette(void)
  * Dendy has PAL framerate and resolution, but ~NTSC timings,
  * and has 50 dummy scanlines to force 50 fps.
  */
-void FCEUD_RegionOverride(unsigned region)
+static void FCEUD_RegionOverride(unsigned region)
 {
    unsigned pal = 0;
    unsigned d = 0;
@@ -1098,8 +1088,6 @@ void FCEUD_RegionOverride(unsigned region)
    }
 
    dendy = d;
-   normal_scanlines = dendy ? 290 : 240;
-   totalscanlines = normal_scanlines + (overclock_enabled ? extrascanlines : 0);
    FCEUI_SetVidSystem(pal);
    ResetPalette();
 }
@@ -1143,7 +1131,6 @@ static void set_apu_channels(int chan)
 static void check_variables(bool startup)
 {
    struct retro_variable var = {0};
-   bool palette_updated = false;
    char key[256];
    int i, enable_apu;
 
@@ -1325,10 +1312,10 @@ static void check_variables(bool startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      bool newval = (!strcmp(var.value, "disabled"));
-      if (newval != use_overscan)
+      bool newval = (!strcmp(var.value, "enabled"));
+      if (newval != crop_overscan)
       {
-         use_overscan = newval;
+         crop_overscan = newval;
          audio_video_updated = 1;
       }
    }
@@ -1339,9 +1326,9 @@ static void check_variables(bool startup)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       bool newval = (!strcmp(var.value, "enabled"));
-      if (newval != overscan_h)
+      if (newval != crop_overscan_h)
       {
-         overscan_h = newval;
+         crop_overscan_h = newval;
          audio_video_updated = 1;
       }
    }
@@ -1351,9 +1338,9 @@ static void check_variables(bool startup)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       bool newval = (!strcmp(var.value, "enabled"));
-      if (newval != overscan_v)
+      if (newval != crop_overscan_v)
       {
-         overscan_v = newval;
+         crop_overscan_v = newval;
          audio_video_updated = 1;
       }
    }
@@ -1362,12 +1349,16 @@ static void check_variables(bool startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      bool newval = (!strcmp(var.value, "8:7 PAR"));
-      if (newval != use_par)
-      {
-         use_par = newval;
-         audio_video_updated = 1;
+      unsigned oldval = aspect_ratio_par;
+      if (!strcmp(var.value, "8:7 PAR")) {
+        aspect_ratio_par = 1;
+      } else if (!strcmp(var.value, "4:3")) {
+        aspect_ratio_par = 2;
+      } else if (!strcmp(var.value, "PP")) {
+        aspect_ratio_par = 3;
       }
+     if (aspect_ratio_par != oldval)
+       audio_video_updated = 1;
    }
 
    var.key = "fceumm_turbo_enable";
@@ -1544,10 +1535,10 @@ void get_mouse_input(unsigned port, uint32_t *zapdata)
    int min_width, min_height, max_width, max_height;
 
 #ifdef PSP
-   adjx = adjy = use_overscan ? 1 : 0;
+   adjx = adjy = crop_overscan ? 1 : 0;
 #else
-   adjx        = overscan_h ? 1 : 0;
-   adjy        = overscan_v ? 1 : 0;
+   adjx        = crop_overscan_h ? 1 : 0;
+   adjy        = crop_overscan_v ? 1 : 0;
 #endif
    max_width   = 256;
    max_height  = 240;
@@ -1740,8 +1731,39 @@ static void FCEUD_UpdateInput(void)
       case RETRO_DEVICE_FC_ARKANOID:
       case RETRO_DEVICE_FC_OEKAKIDS:
       case RETRO_DEVICE_FC_SHADOW:
-         get_mouse_input(0, &nes_input.FamicomData);
+         get_mouse_input(0, nes_input.FamicomData);
          break;
+      case RETRO_DEVICE_FC_HYPERSHOT:
+      {
+         static int toggle;
+         int i;
+
+         nes_input.FamicomData[0] = 0;
+         toggle ^= 1;
+         for (i = 0; i < 2; i++)
+         {
+            
+            if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B))
+               nes_input.FamicomData[0] |= 0x02 << (i * 2);
+            else if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y))
+            {
+               if (toggle)
+                  nes_input.FamicomData[0] |= 0x02 << (i * 2);
+               else
+                  nes_input.FamicomData[0] &= ~(0x02 << (i * 2));
+            }
+            if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A))
+               nes_input.FamicomData[0] |= 0x04 << (i * 2);
+            else if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X))
+            {
+               if (toggle)
+                  nes_input.FamicomData[0] |= 0x04 << (i * 2);
+               else
+                  nes_input.FamicomData[0] &= ~(0x04 << (i * 2));
+            }
+         }
+         break;
+      }
    }
 
    if (input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2))
@@ -1780,7 +1802,7 @@ static void retro_run_blit(uint8_t *gfx)
    unsigned pitch  = 512;
 
 #ifdef PSP
-   if (!use_overscan)
+   if (crop_overscan)
    {
       width  -= 16;
       height -= 16;
@@ -1796,10 +1818,10 @@ static void retro_run_blit(uint8_t *gfx)
     * so we use GU_PSM_4444 ( 2 Bytes per pixel ) instead
     * with half the values for pitch / width / x offset
     */
-   if (use_overscan)
-      sceGuCopyImage(GU_PSM_4444, 0, 0, 128, 240, 128, XBuf, 0, 0, 128, texture_vram_p);
-   else
+   if (crop_overscan)
       sceGuCopyImage(GU_PSM_4444, 4, 4, 120, 224, 128, XBuf, 0, 0, 128, texture_vram_p);
+   else
+      sceGuCopyImage(GU_PSM_4444, 0, 0, 128, 240, 128, XBuf, 0, 0, 128, texture_vram_p);
 
    sceGuTexSync();
    sceGuTexImage(0, 256, 256, 256, texture_vram_p);
@@ -1832,10 +1854,10 @@ static void retro_run_blit(uint8_t *gfx)
       ps2->coreTexture->PSM = GS_PSM_T8;
       ps2->coreTexture->ClutPSM = GS_PSM_CT16;
       ps2->coreTexture->Filter = GS_FILTER_LINEAR;
-      ps2->padding = (struct retro_hw_ps2_insets){ overscan_v ? 8.0f : 0.0f,
-                                                   overscan_h ? 8.0f : 0.0f,
-                                                   overscan_v ? 8.0f : 0.0f,
-                                                   overscan_h ? 8.0f : 0.0f};
+      ps2->padding = (struct retro_hw_ps2_insets){ crop_overscan_v ? 8.0f : 0.0f,
+                                                   crop_overscan_h ? 8.0f : 0.0f,
+                                                   crop_overscan_v ? 8.0f : 0.0f,
+                                                   crop_overscan_h ? 8.0f : 0.0f};
    }
 
    ps2->coreTexture->Clut = (u32*)retro_palette;
@@ -1846,43 +1868,42 @@ static void retro_run_blit(uint8_t *gfx)
 #ifdef HAVE_NTSC_FILTER
    if (use_ntsc)
    {
-      int h_offset, v_offset;
-
       burst_phase ^= 1;
       if (ntsc_setup.merge_fields)
          burst_phase = 0;
 
       nes_ntsc_blit(&nes_ntsc, (NES_NTSC_IN_T const*)gfx, (NES_NTSC_IN_T *)XDBuf,
           NES_WIDTH, burst_phase, NES_WIDTH, NES_HEIGHT,
-          ntsc_video_out, NTSC_WIDTH * sizeof(uint16));
+          ntsc_video_out, NES_NTSC_WIDTH * sizeof(uint16));
 
-      h_offset = overscan_h ?  NES_NTSC_OUT_WIDTH(8) : 0;
-      v_offset = overscan_v ? 8 : 0;
-      width    = overscan_h ? 560 : 602;
-      height   = overscan_v ? 224 : 240;
+      width    = NES_WIDTH - (crop_overscan_h ? 16 : 0);
+      width    = NES_NTSC_OUT_WIDTH(width);
+      height   = NES_HEIGHT - (crop_overscan_v ? 16 : 0);
       pitch    = width * sizeof(uint16_t);
 
       {
-         const uint16_t *in = ntsc_video_out + h_offset + NTSC_WIDTH * v_offset;
-         uint16_t *out = fceu_video_out;
-         int y;
+         int32_t h_offset   = crop_overscan_h ?  NES_NTSC_OUT_WIDTH(8) : 0;
+         int32_t v_offset   = crop_overscan_v ? 8 : 0;
+         const uint16_t *in = ntsc_video_out + h_offset + NES_NTSC_WIDTH * v_offset;
+         uint16_t *out      = fceu_video_out;
 
          for (y = 0; y < height; y++)
          {
-            memcpy(out, in, width * sizeof(uint16_t));
-            in += NTSC_WIDTH;
+            memcpy(out, in, pitch);
+            in += NES_NTSC_WIDTH;
             out += width;
          }
       }
+      video_cb(fceu_video_out, width, height, pitch);
    }
    else
 #endif /* HAVE_NTSC_FILTER */
    {
-      incr   += (overscan_h ? 16 : 0);
-      width  -= (overscan_h ? 16 : 0);
-      height -= (overscan_v ? 16 : 0);
-      pitch  -= (overscan_h ? 32 : 0);
-      gfx    += (overscan_v ? ((overscan_h ? 8 : 0) + 256 * 8) : (overscan_h ? 8 : 0));
+      incr   += (crop_overscan_h ? 16 : 0);
+      width  -= (crop_overscan_h ? 16 : 0);
+      height -= (crop_overscan_v ? 16 : 0);
+      pitch  -= (crop_overscan_h ? 32 : 0);
+      gfx    += (crop_overscan_v ? ((crop_overscan_h ? 8 : 0) + 256 * 8) : (crop_overscan_h ? 8 : 0));
 
       if (use_raw_palette)
       {
@@ -1897,16 +1918,15 @@ static void retro_run_blit(uint8_t *gfx)
             for (x = 0; x < width; x++, gfx++)
                fceu_video_out[y * width + x] = retro_palette[*gfx];
       }
+      video_cb(fceu_video_out, width, height, pitch);
    }
-   video_cb(fceu_video_out, width, height, pitch);
 #endif
 }
 
 void retro_run(void)
 {
-   unsigned i;
    uint8_t *gfx;
-   int32_t ssize = 0;
+   int32_t i, ssize = 0;
    bool updated = false;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
@@ -1964,6 +1984,31 @@ bool retro_unserialize(const void * data, size_t size)
    return true;
 }
 
+static int checkGG(char c)
+{
+   static const char lets[16] = { 'A', 'P', 'Z', 'L', 'G', 'I', 'T', 'Y', 'E', 'O', 'X', 'U', 'K', 'S', 'V', 'N' };
+   int x;
+
+   for (x = 0; x < 16; x++)
+      if (lets[x] == toupper(c))
+         return 1;
+   return 0;
+}
+
+static int GGisvalid(const char *code)
+{
+   size_t len = strlen(code);
+   uint32 i;
+   
+   if (len != 6 && len != 8)
+      return 0;
+
+   for (i = 0; i < len; i++)
+      if (!checkGG(code[i]))
+         return 0;
+   return 1;
+}
+
 void retro_cheat_reset(void)
 {
    FCEU_ResetCheats();
@@ -1972,25 +2017,63 @@ void retro_cheat_reset(void)
 void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
    char name[256];
+   char temp[256];
+   char *codepart;
    uint16 a;
    uint8  v;
    int    c;
    int    type = 1;
+
+   if (code == NULL)
+      return;
+
    sprintf(name, "N/A");
+   strcpy(temp, code);
+   codepart = strtok(temp, "+,;._ ");
 
-   if (FCEUI_DecodeGG(code, &a, &v, &c))
-      goto input_cheat;
-
-   /* Not a Game Genie code. */
-
-   if (FCEUI_DecodePAR(code, &a, &v, &c, &type))
-      goto input_cheat;
-
-   /* Not a Pro Action Replay code. */
-
-   return;
-input_cheat:
-   FCEUI_AddCheat(name, a, v, c, type);
+   while (codepart)
+   {
+      if ((strlen(codepart) == 7) && (codepart[4]==':'))
+      {
+         /* raw code in xxxx:xx format */
+         log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (Raw)\n", codepart);
+         codepart[4] = '\0';
+         a = strtoul(codepart, NULL, 16);
+         v = strtoul(codepart + 5, NULL, 16);
+         c = -1;
+         /* Zero-page addressing modes don't go through the normal read/write handlers in FCEU, so
+          * we must do the old hacky method of RAM cheats. */
+         if (a < 0x0100) type = 0;
+         FCEUI_AddCheat(name, a, v, c, type);
+      }
+      else if ((strlen(codepart) == 10) && (codepart[4] == '?') && (codepart[7] == ':'))
+      {
+         /* raw code in xxxx?xx:xx */
+         log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (Raw)\n", codepart);
+         codepart[4] = '\0';
+         codepart[7] = '\0';
+         a = strtoul(codepart, NULL, 16);
+         v = strtoul(codepart + 8, NULL, 16);
+         c = strtoul(codepart + 5, NULL, 16);
+         /* Zero-page addressing modes don't go through the normal read/write handlers in FCEU, so
+          * we must do the old hacky method of RAM cheats. */
+         if (a < 0x0100) type = 0;
+         FCEUI_AddCheat(name, a, v, c, type);
+      }
+      else if (GGisvalid(codepart) && FCEUI_DecodeGG(codepart, &a, &v, &c))
+      {
+         FCEUI_AddCheat(name, a, v, c, type);
+         log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (GG)\n", codepart);
+      }
+      else if (FCEUI_DecodePAR(codepart, &a, &v, &c, &type))
+      {
+         FCEUI_AddCheat(name, a, v, c, type);
+         log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (PAR)\n", codepart);
+      }
+      else
+         log_cb.log(RETRO_LOG_DEBUG, "Invalid or unknown code: '%s'\n", codepart);
+      codepart = strtok(NULL,"+,;._ ");
+   }
 }
 
 typedef struct cartridge_db
@@ -2268,6 +2351,7 @@ bool retro_load_game(const struct retro_game_info *game)
    char* sav_dir=NULL;
    size_t fourscore_len = sizeof(fourscore_db_list)   / sizeof(fourscore_db_list[0]);
    size_t famicom_4p_len = sizeof(famicom_4p_db_list) / sizeof(famicom_4p_db_list[0]);
+   enum retro_pixel_format rgb565;
 
    struct retro_input_descriptor desc[] = {
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "D-Pad Left" },
@@ -2326,6 +2410,12 @@ bool retro_load_game(const struct retro_game_info *game)
    if (!game)
       return false;
 
+#ifdef FRONTEND_SUPPORTS_RGB565
+   rgb565 = RETRO_PIXEL_FORMAT_RGB565;
+   if(environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &rgb565))
+      log_cb.log(RETRO_LOG_INFO, "Frontend supports RGB565 - will use that instead of XRGB1555.\n");
+#endif
+
    /* initialize some of the default variables */
 #ifdef GEKKO
    sndsamplerate = 32000;
@@ -2336,6 +2426,7 @@ bool retro_load_game(const struct retro_game_info *game)
    sndvolume = 150;
    swapDuty = 0;
    dendy = 0;
+   opt_region = 0;
 
    /* Wii: initialize this or else last variable is passed through
     * when loading another rom causing save state size change. */
@@ -2347,7 +2438,7 @@ bool retro_load_game(const struct retro_game_info *game)
    fceu_video_out = (uint16_t*)linearMemAlign(256 * 240 * sizeof(uint16_t), 128);
 #elif !defined(PSP)
 #ifdef HAVE_NTSC_FILTER
-#define FB_WIDTH NTSC_WIDTH
+#define FB_WIDTH NES_NTSC_WIDTH
 #define FB_HEIGHT NES_HEIGHT
 #else /* !HAVE_NTSC_FILTER */
 #define FB_WIDTH NES_WIDTH

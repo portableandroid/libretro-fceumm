@@ -22,11 +22,7 @@
 #ifndef __FCEU_TYPES_H
 #define __FCEU_TYPES_H
 
-#ifdef __LIBRETRO__
 #include <stdint.h>
-#else
-#include <inttypes.h>
-#endif
 typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
@@ -39,7 +35,7 @@ typedef uint32_t uint32;
 typedef unsigned long long uint64;
 typedef long long int64;
 	#define GINLINE inline
-#elif MSVC
+#elif MSVC | _MSC_VER
 typedef __int64 int64;
 typedef unsigned __int64 uint64;
 	#define GINLINE		/* Can't declare a function INLINE
