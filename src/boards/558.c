@@ -24,8 +24,9 @@
 
 #include "mapinc.h"
 #include "eeprom_93C66.h"
-#include "../ines.h"
 
+static uint8 *WRAM;
+static uint32 WRAMSIZE;
 static uint8 reg[4];
 static uint8 haveEEPROM;
 static uint8 eeprom_data[512];
@@ -91,22 +92,38 @@ static void power(void)
    SetWriteHandler(0x6000, 0x7FFF, CartBW);
 }
 
-static void reset()
+static void reset(void)
 {
    memset(reg, 0, sizeof(reg));
    sync();
 }
 
+static void close(void)
+{
+   if (WRAM)
+      FCEU_gfree(WRAM);
+   WRAM = NULL;
+}
+
+static void StateRestore(int version)
+{
+   sync();
+}
+
 void Mapper558_Init (CartInfo *info)
 {
-   uint32 WRAMSIZE = info->PRGRamSize + (info->PRGRamSaveSize &~0x7FF);
    info->Power   = power;
    info->Reset   = reset;
+   info->Close   = close;
    GameHBIRQHook = hblank;
+
+   GameStateRestore = StateRestore;
    AddExState(StateRegs, ~0, 0, 0);
 
-   uint8* WRAM = (uint8*) FCEU_gmalloc(WRAMSIZE);
+   WRAMSIZE = info->PRGRamSize + (info->PRGRamSaveSize &~0x7FF);
+   WRAM = (uint8*) FCEU_gmalloc(WRAMSIZE);
    SetupCartPRGMapping(0x10, WRAM, WRAMSIZE, 1);
+   AddExState(WRAM, WRAMSIZE, 0, "WRAM");
    FCEU_CheatAddRAM(WRAMSIZE >> 10, 0x6000, WRAM);
    haveEEPROM =!!(info->PRGRamSaveSize &0x200);
    if (haveEEPROM)

@@ -5,8 +5,14 @@
 #include <stdarg.h>
 #include <ctype.h>
 
+#ifdef _MSC_VER
+#include <compat/msvc.h>
+#endif
+
 #include <libretro.h>
-#include <compat/fopen_utf8.h>
+#include <string/stdstring.h>
+#include <file/file_path.h>
+#include <streams/file_stream.h>
 #include <streams/memory_stream.h>
 #include <libretro_dipswitch.h>
 #include <libretro_core_options.h>
@@ -63,6 +69,9 @@
 #define NES_4_3      ((width / (height * (256.0 / 240.0))) * 4.0 / 3.0)
 #define NES_PP       ((width / (height * (256.0 / 240.0))) * 16.0 / 15.0)
 
+#define NES_PAL_FPS  (838977920.0 / 16777215.0)
+#define NES_NTSC_FPS (1008307711.0 / 16777215.0)
+
 #if defined(_3DS)
 void* linearMemAlign(size_t size, size_t alignment);
 void linearFree(void* mem);
@@ -98,7 +107,7 @@ static int aspect_ratio_par;
  * each player
  */
 
-#define MAX_BUTTONS 8
+#define MAX_BUTTONS 9
 #define TURBO_BUTTONS 2
 unsigned char turbo_button_toggle[MAX_PLAYERS][TURBO_BUTTONS] = { {0} };
 
@@ -116,6 +125,7 @@ static const keymap turbomap[] = {
 static const keymap bindmap[] = {
    { RETRO_DEVICE_ID_JOYPAD_A, JOY_A },
    { RETRO_DEVICE_ID_JOYPAD_B, JOY_B },
+   { RETRO_DEVICE_ID_JOYPAD_L3, JOY_A | JOY_B },
    { RETRO_DEVICE_ID_JOYPAD_SELECT, JOY_SELECT },
    { RETRO_DEVICE_ID_JOYPAD_START, JOY_START },
    { RETRO_DEVICE_ID_JOYPAD_UP, JOY_UP },
@@ -145,6 +155,8 @@ enum RetroZapperInputModes{RetroLightgun, RetroMouse, RetroPointer};
 static enum RetroZapperInputModes zappermode = RetroLightgun;
 
 static bool libretro_supports_bitmasks = false;
+static bool libretro_supports_option_categories = false;
+static unsigned libretro_msg_interface_version = 0;
 
 /* emulator-specific variables */
 
@@ -166,8 +178,8 @@ unsigned dendy = 0;
 
 static unsigned systemRegion = 0;
 static unsigned opt_region = 0;
-static unsigned opt_showAdvSoundOptions = 0;
-static unsigned opt_showAdvSystemOptions = 0;
+static bool opt_showAdvSoundOptions = true;
+static bool opt_showAdvSystemOptions = true;
 
 #if defined(PSP) || defined(PS2)
 static __attribute__((aligned(16))) uint16_t retro_palette[256];
@@ -279,11 +291,54 @@ void FCEUD_Message(char *s)
    log_cb.log(RETRO_LOG_INFO, "%s", s);
 }
 
-void FCEUD_DispMessage(char *m)
-{  struct retro_message msg;
-   msg.msg = m;
-   msg.frames = 180;
-   environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+void FCEUD_DispMessage(enum retro_log_level level, unsigned duration, const char *str)
+{
+   if (!environ_cb)
+      return;
+
+   if (libretro_msg_interface_version >= 1)
+   {
+      struct retro_message_ext msg;
+      unsigned priority;
+
+      switch (level)
+      {
+         case RETRO_LOG_ERROR:
+            priority = 5;
+            break;
+         case RETRO_LOG_WARN:
+            priority = 4;
+            break;
+         case RETRO_LOG_INFO:
+            priority = 3;
+            break;
+         case RETRO_LOG_DEBUG:
+         default:
+            priority = 1;
+            break;
+      }
+
+      msg.msg      = str;
+      msg.duration = duration;
+      msg.priority = priority;
+      msg.level    = level;
+      msg.target   = RETRO_MESSAGE_TARGET_OSD;
+      msg.type     = RETRO_MESSAGE_TYPE_NOTIFICATION_ALT;
+      msg.progress = -1;
+
+      environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &msg);
+   }
+   else
+   {
+      float fps       = (FSettings.PAL || dendy) ? NES_PAL_FPS : NES_NTSC_FPS;
+      unsigned frames = (unsigned)(((float)duration * fps / 1000.0f) + 0.5f);
+      struct retro_message msg;
+
+      msg.msg    = str;
+      msg.frames = frames;
+
+      environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+   }
 }
 
 void FCEUD_SoundToggle (void)
@@ -291,18 +346,12 @@ void FCEUD_SoundToggle (void)
    FCEUI_SetSoundVolume(sndvolume);
 }
 
-FILE *FCEUD_UTF8fopen(const char *n, const char *m)
-{
-   if (n)
-      return fopen_utf8(n, m);
-   return NULL;
-}
-
 /*palette for FCEU*/
-#define PAL_TOTAL   16 /* total no. of palettes in palettes[] */
-#define PAL_DEFAULT (PAL_TOTAL + 1)
-#define PAL_RAW     (PAL_TOTAL + 2)
-#define PAL_CUSTOM  (PAL_TOTAL + 3)
+#define PAL_INTERNAL 16 /* Number of palettes in palettes[] */
+#define PAL_DEFAULT  (PAL_INTERNAL + 1)
+#define PAL_RAW      (PAL_INTERNAL + 2)
+#define PAL_CUSTOM   (PAL_INTERNAL + 3)
+#define PAL_TOTAL    PAL_CUSTOM
 
 static int external_palette_exist = 0;
 extern int ipalette;
@@ -607,6 +656,158 @@ struct st_palettes palettes[] = {
    }
 };
 
+/* ========================================
+ * Palette switching START
+ * ======================================== */
+
+/* Period in frames between palette switches
+ * when holding RetroPad L2 + Left/Right */
+#define PALETTE_SWITCH_PERIOD 30
+
+static bool libretro_supports_set_variable         = false;
+static bool palette_switch_enabled                 = false;
+static unsigned palette_switch_counter             = 0;
+struct retro_core_option_value *palette_opt_values = NULL;
+static const char *palette_labels[PAL_TOTAL]       = {0};
+
+static uint32_t palette_switch_get_current_index(void)
+{
+   if (current_palette < PAL_INTERNAL)
+      return current_palette + 1;
+
+   switch (current_palette)
+   {
+      case PAL_DEFAULT:
+         return 0;
+      case PAL_RAW:
+      case PAL_CUSTOM:
+         return current_palette - 1;
+      default:
+         break;
+   }
+
+   /* Cannot happen */
+   return 0;
+}
+
+static void palette_switch_init(void)
+{
+   size_t i;
+   struct retro_core_option_v2_definition *opt_defs      = option_defs;
+   struct retro_core_option_v2_definition *opt_def       = NULL;
+#ifndef HAVE_NO_LANGEXTRA
+   struct retro_core_option_v2_definition *opt_defs_intl = NULL;
+   struct retro_core_option_v2_definition *opt_def_intl  = NULL;
+   unsigned language                                     = 0;
+#endif
+
+   libretro_supports_set_variable = false;
+   if (environ_cb(RETRO_ENVIRONMENT_SET_VARIABLE, NULL))
+      libretro_supports_set_variable = true;
+
+   palette_switch_enabled = libretro_supports_set_variable;
+   palette_switch_counter = 0;
+
+#ifndef HAVE_NO_LANGEXTRA
+   if (environ_cb(RETRO_ENVIRONMENT_GET_LANGUAGE, &language) &&
+       (language < RETRO_LANGUAGE_LAST) &&
+       (language != RETRO_LANGUAGE_ENGLISH) &&
+       options_intl[language])
+      opt_defs_intl = options_intl[language]->definitions;
+#endif
+
+   /* Find option corresponding to palettes key */
+   for (opt_def = opt_defs; opt_def->key; opt_def++)
+      if (!strcmp(opt_def->key, "fceumm_palette"))
+         break;
+
+   /* Cache option values array for fast access
+    * when setting palette index */
+   palette_opt_values = opt_def->values;
+
+   /* Loop over all palette values and fetch
+    * palette labels for notification purposes */
+   for (i = 0; i < PAL_TOTAL; i++)
+   {
+      const char *value       = opt_def->values[i].value;
+      const char *value_label = NULL;
+
+      /* Check if we have a localised palette label */
+#ifndef HAVE_NO_LANGEXTRA
+      if (opt_defs_intl)
+      {
+         /* Find localised option corresponding to key */
+         for (opt_def_intl = opt_defs_intl;
+              opt_def_intl->key;
+              opt_def_intl++)
+         {
+            if (!strcmp(opt_def_intl->key, "fceumm_palette"))
+            {
+               size_t j = 0;
+
+               /* Search for current option value */
+               for (;;)
+               {
+                  const char *value_intl = opt_def_intl->values[j].value;
+
+                  if (!value_intl)
+                     break;
+
+                  if (!strcmp(value, value_intl))
+                  {
+                     /* We have a match; fetch localised label */
+                     value_label = opt_def_intl->values[j].label;
+                     break;
+                  }
+
+                  j++;
+               }
+
+               break;
+            }
+         }
+      }
+#endif
+      /* If localised palette label is unset,
+       * use label from option_defs_us or fallback
+       * to value itself */
+      if (!value_label)
+         value_label = opt_def->values[i].label;
+      if (!value_label)
+         value_label = value;
+
+      palette_labels[i] = value_label;
+   }
+}
+
+static void palette_switch_deinit(void)
+{
+   libretro_supports_set_variable = false;
+   palette_switch_enabled         = false;
+   palette_switch_counter         = 0;
+   palette_opt_values             = NULL;
+}
+
+static void palette_switch_set_index(uint32_t palette_index)
+{
+   struct retro_variable var = {0};
+
+   if (palette_index >= PAL_TOTAL)
+      palette_index = PAL_TOTAL - 1;
+
+   /* Notify frontend of option value changes */
+   var.key   = "fceumm_palette";
+   var.value = palette_opt_values[palette_index].value;
+   environ_cb(RETRO_ENVIRONMENT_SET_VARIABLE, &var);
+
+   /* Display notification message */
+   FCEUD_DispMessage(RETRO_LOG_INFO, 2000, palette_labels[palette_index]);
+}
+
+/* ========================================
+ * Palette switching END
+ * ======================================== */
+
 #ifdef HAVE_NTSC_FILTER
 /* ntsc */
 #include "nes_ntsc.h"
@@ -619,7 +820,7 @@ struct st_palettes palettes[] = {
 #define NES_NTSC_WIDTH  (((NES_NTSC_OUT_WIDTH(256) + 3) >> 2) << 2)
 
 static unsigned use_ntsc = 0;
-static unsigned burst_phase;
+static unsigned burst_phase = 0;
 static nes_ntsc_t nes_ntsc;
 static nes_ntsc_setup_t ntsc_setup;
 static uint16_t *ntsc_video_out = NULL; /* for ntsc blit buffer */
@@ -629,6 +830,9 @@ static void NTSCFilter_Cleanup(void)
    if (ntsc_video_out)
       free(ntsc_video_out);
    ntsc_video_out = NULL;
+
+   use_ntsc = 0;
+   burst_phase = 0;
 }
 
 static void NTSCFilter_Init(void)
@@ -866,29 +1070,207 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
    }
 }
 
+/* Core options 'update display' callback */
+static bool update_option_visibility(void)
+{
+   struct retro_variable var = {0};
+   bool updated              = false;
+   size_t i, size;
+
+   /* If frontend supports core option categories,
+    * then fceumm_show_adv_system_options and
+    * fceumm_show_adv_sound_options are ignored
+    * and no options should be hidden */
+   if (libretro_supports_option_categories)
+      return false;
+
+   var.key = "fceumm_show_adv_system_options";
+   var.value = NULL;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      bool opt_showAdvSystemOptions_prev = opt_showAdvSystemOptions;
+
+      opt_showAdvSystemOptions = true;
+      if (strcmp(var.value, "disabled") == 0)
+         opt_showAdvSystemOptions = false;
+
+      if (opt_showAdvSystemOptions != opt_showAdvSystemOptions_prev)
+      {
+         struct retro_core_option_display option_display;
+         unsigned i;
+         unsigned size;
+         char options_list[][25] = {
+            "fceumm_overclocking",
+            "fceumm_ramstate",
+            "fceumm_nospritelimit",
+            "fceumm_up_down_allowed",
+            "fceumm_show_crosshair"
+         };
+
+         option_display.visible = opt_showAdvSystemOptions;
+         size = sizeof(options_list) / sizeof(options_list[0]);
+         for (i = 0; i < size; i++)
+         {
+            option_display.key = options_list[i];
+            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+                  &option_display);
+         }
+
+         updated = true;
+      }
+   }
+
+   var.key = "fceumm_show_adv_sound_options";
+   var.value = NULL;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      bool opt_showAdvSoundOptions_prev = opt_showAdvSoundOptions;
+
+      opt_showAdvSoundOptions = true;
+      if (strcmp(var.value, "disabled") == 0)
+         opt_showAdvSoundOptions = false;
+
+      if (opt_showAdvSoundOptions != opt_showAdvSoundOptions_prev)
+      {
+         struct retro_core_option_display option_display;
+         unsigned i;
+         unsigned size;
+         char options_list[][25] = {
+            "fceumm_sndvolume",
+            "fceumm_sndquality",
+            "fceumm_swapduty",
+            "fceumm_apu_1",
+            "fceumm_apu_2",
+            "fceumm_apu_3",
+            "fceumm_apu_4",
+            "fceumm_apu_5"
+         };
+
+         option_display.visible  = opt_showAdvSoundOptions;
+         size = sizeof(options_list) / sizeof(options_list[0]);
+         for (i = 0; i < size; i++)
+         {
+            option_display.key = options_list[i];
+            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+                  &option_display);
+         }
+
+         updated = true;
+      }
+   }
+
+   return updated;
+}
+
 static void set_variables(void)
 {
+   struct retro_core_option_display option_display;
    unsigned i = 0, index = 0;
 
+   option_display.visible = false;
+
    /* Initialize main core option struct */
-   for (i = 0; i < MAX_CORE_OPTIONS; i++)
-      option_defs_us[i] = option_defs_empty;
+   memset(&option_defs_us, 0, sizeof(option_defs_us));
 
    /* Write common core options to main struct */
-   while (option_defs_common[index].key) {
-      option_defs_us[index] = option_defs_common[index];
+   while (option_defs[index].key) {
+      memcpy(&option_defs_us[index], &option_defs[index],
+            sizeof(struct retro_core_option_v2_definition));
       index++;
    }
 
    /* Append dipswitch settings to core options if available */
-   index += set_dipswitch_variables(index, option_defs_us);
-   option_defs_us[index] = option_defs_empty;
+   set_dipswitch_variables(index, option_defs_us);
 
-   libretro_set_core_options(environ_cb);
+   libretro_supports_option_categories = false;
+   libretro_set_core_options(environ_cb,
+         &libretro_supports_option_categories);
+
+   /* If frontend supports core option categories,
+    * fceumm_show_adv_system_options and
+    * fceumm_show_adv_sound_options are unused
+    * and should be hidden */
+   if (libretro_supports_option_categories)
+   {
+      option_display.key = "fceumm_show_adv_system_options";
+
+      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+            &option_display);
+
+      option_display.key = "fceumm_show_adv_sound_options";
+
+      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+            &option_display);
+   }
+   /* If frontend does not support core option
+    * categories, core options may be shown/hidden
+    * at runtime. In this case, register 'update
+    * display' callback, so frontend can update
+    * core options menu without calling retro_run() */
+   else
+   {
+      struct retro_core_options_update_display_callback update_display_cb;
+      update_display_cb.callback = update_option_visibility;
+
+      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK,
+            &update_display_cb);
+   }
+
+   /* VS UNISystem games use internal palette regardless
+    * of user setting, so hide fceumm_palette option */
+   if (GameInfo && (GameInfo->type == GIT_VSUNI))
+   {
+      option_display.key = "fceumm_palette";
+
+      environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY,
+            &option_display);
+
+      /* Additionally disable gamepad palette
+       * switching */
+      palette_switch_enabled = false;
+   }
+}
+
+/* Game Genie add-on must be enabled before
+ * loading content, so we cannot parse this
+ * option inside check_variables() */
+static void check_game_genie_variable(void)
+{
+   struct retro_variable var = {0};
+   int game_genie_enabled    = 0;
+
+   var.key = "fceumm_game_genie";
+
+   /* Game Genie is only enabled for regular
+    * cartridges (excludes arcade content,
+    * FDS games, etc.) */
+   if ((GameInfo->type == GIT_CART) &&
+       (iNESCart.mapper != 105) && /* Nintendo World Championship cart (Mapper 105)*/
+       environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) &&
+       var.value &&
+       !strcmp(var.value, "enabled"))
+      game_genie_enabled = 1;
+
+   FCEUI_SetGameGenie(game_genie_enabled);
+}
+
+/* Callback passed to FCEUI_LoadGame()
+ * > Required since we must set and check
+ *   core options immediately after ROM
+ *   is loaded, before FCEUI_LoadGame()
+ *   returns */
+static void frontend_post_load_init()
+{
+   set_variables();
+   check_game_genie_variable();
 }
 
 void retro_set_environment(retro_environment_t cb)
 {
+   struct retro_vfs_interface_info vfs_iface_info;
+
    static const struct retro_controller_description pads1[] = {
       { "Auto",    RETRO_DEVICE_AUTO },
       { "Gamepad", RETRO_DEVICE_GAMEPAD },
@@ -935,13 +1317,31 @@ void retro_set_environment(retro_environment_t cb)
       { 0, 0 },
    };
 
+   static const struct retro_system_content_info_override content_overrides[] = {
+      {
+         "fds|nes|unf|unif", /* extensions */
+         false,              /* need_fullpath */
+         false               /* persistent_data */
+      },
+      { NULL, false, false }
+   };
+
    environ_cb = cb;
+
    environ_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
+
+   vfs_iface_info.required_interface_version = 1;
+   vfs_iface_info.iface                      = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      filestream_vfs_init(&vfs_iface_info);
+
+   environ_cb(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE,
+         (void*)content_overrides);
 }
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-   info->need_fullpath    = false;
+   info->need_fullpath    = true;
    info->valid_extensions = "fds|nes|unf|unif";
 #ifdef GIT_VERSION
    info->library_version  = STRINGIZE_VALUE_OF(GIT_VERSION);
@@ -983,9 +1383,9 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
    info->geometry.aspect_ratio = get_aspect_ratio(width, height);
    info->timing.sample_rate = (float)sndsamplerate;
    if (FSettings.PAL || dendy)
-      info->timing.fps = 838977920.0/16777215.0;
+      info->timing.fps = NES_PAL_FPS;
    else
-      info->timing.fps = 1008307711.0/16777215.0;
+      info->timing.fps = NES_NTSC_FPS;
 }
 
 static void check_system_specs(void)
@@ -1005,6 +1405,11 @@ void retro_init(void)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
       libretro_supports_bitmasks = true;
+
+   environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION,
+         &libretro_msg_interface_version);
+
+   palette_switch_init();
 }
 
 static void retro_set_custom_palette(void)
@@ -1075,15 +1480,15 @@ static void FCEUD_RegionOverride(unsigned region)
          pal = systemRegion & 1;
          break;
       case 1: /* ntsc */
-         FCEU_DispMessage("System: NTSC");
+         FCEUD_DispMessage(RETRO_LOG_INFO, 2000, "System: NTSC");
          break;
       case 2: /* pal */
          pal = 1;
-         FCEU_DispMessage("System: PAL");
+         FCEUD_DispMessage(RETRO_LOG_INFO, 2000, "System: PAL");
          break;
       case 3: /* dendy */
          d = 1;
-         FCEU_DispMessage("System: Dendy");
+         FCEUD_DispMessage(RETRO_LOG_INFO, 2000, "System: Dendy");
          break;
    }
 
@@ -1108,10 +1513,12 @@ void retro_deinit (void)
    ps2 = NULL;
 #endif
    libretro_supports_bitmasks = false;
+   libretro_msg_interface_version = 0;
    DPSW_Cleanup();
 #ifdef HAVE_NTSC_FILTER
    NTSCFilter_Cleanup();
 #endif
+   palette_switch_deinit();
 }
 
 void retro_reset(void)
@@ -1319,7 +1726,6 @@ static void check_variables(bool startup)
          audio_video_updated = 1;
       }
    }
-
 #else
    var.key = "fceumm_overscan_h";
 
@@ -1345,6 +1751,7 @@ static void check_variables(bool startup)
       }
    }
 #endif
+
    var.key = "fceumm_aspect";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1385,6 +1792,7 @@ static void check_variables(bool startup)
       nes_input.turbo_delay = atoi(var.value);
 
    var.key = "fceumm_region";
+
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       unsigned oldval = opt_region;
@@ -1462,68 +1870,7 @@ static void check_variables(bool startup)
 
    update_dipswitch();
 
-   var.key = "fceumm_show_adv_system_options";
-   var.value = NULL;
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      unsigned newval = (!strcmp(var.value, "enabled")) ? 1 : 0;
-      if ((opt_showAdvSystemOptions != newval) || startup)
-      {
-         struct retro_core_option_display option_display;
-         unsigned i;
-         unsigned size;
-         char options_list[][25] = {
-            "fceumm_overclocking",
-            "fceumm_ramstate",
-            "fceumm_nospritelimit",
-            "fceumm_up_down_allowed",
-            "fceumm_show_crosshair"
-         };
-
-         opt_showAdvSystemOptions = newval;
-         option_display.visible = opt_showAdvSystemOptions;
-         size = sizeof(options_list) / sizeof(options_list[0]);
-         for (i = 0; i < size; i++)
-         {
-            option_display.key = options_list[i];
-            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-         }
-      }
-   }
-
-   var.key = "fceumm_show_adv_sound_options";
-   var.value = NULL;
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      unsigned newval = (!strcmp(var.value, "enabled")) ? 1 : 0;
-      if ((opt_showAdvSoundOptions != newval) || startup)
-      {
-         struct retro_core_option_display option_display;
-         unsigned i;
-         unsigned size;
-         char options_list[][25] = {
-            "fceumm_sndvolume",
-            "fceumm_sndquality",
-            "fceumm_swapduty",
-            "fceumm_apu_1",
-            "fceumm_apu_2",
-            "fceumm_apu_3",
-            "fceumm_apu_4",
-            "fceumm_apu_5"
-         };
-
-         opt_showAdvSoundOptions = newval;
-         option_display.visible  = opt_showAdvSoundOptions;
-         size = sizeof(options_list) / sizeof(options_list[0]);
-         for (i = 0; i < size; i++)
-         {
-            option_display.key = options_list[i];
-            environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display);
-         }
-      }
-   }
+   update_option_visibility();
 }
 
 static int mzx = 0, mzy = 0;
@@ -1625,6 +1972,8 @@ void get_mouse_input(unsigned port, uint32_t *zapdata)
 static void FCEUD_UpdateInput(void)
 {
    unsigned player, port;
+   bool palette_prev = false;
+   bool palette_next = false;
 
    poll_cb();
 
@@ -1636,7 +1985,8 @@ static void FCEUD_UpdateInput(void)
    {
       int i              = 0;
       uint8_t input_buf  = 0;
-      int player_enabled = (nes_input.type[player] == RETRO_DEVICE_GAMEPAD) || (nes_input.type[player] == RETRO_DEVICE_JOYPAD);
+      int player_enabled = (nes_input.type[player] == RETRO_DEVICE_GAMEPAD) ||
+            (nes_input.type[player] == RETRO_DEVICE_JOYPAD);
 
       if (player_enabled)
       {
@@ -1644,34 +1994,72 @@ static void FCEUD_UpdateInput(void)
 
          if (libretro_supports_bitmasks)
          {
+            bool dpad_enabled = true;
+
             ret = input_cb(player, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
+
+            /* If palette switching is enabled, check if
+             * player 1 has the L2 button held down */
+            if ((player == 0) &&
+                palette_switch_enabled &&
+                (ret & (1 << RETRO_DEVICE_ID_JOYPAD_L2)))
+            {
+               /* D-Pad left/right are used to switch palettes */
+               palette_prev = (bool)(ret & (1 << RETRO_DEVICE_ID_JOYPAD_LEFT));
+               palette_next = (bool)(ret & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT));
+
+               /* Regular D-Pad input is disabled */
+               dpad_enabled = false;
+            }
 
             if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_A))
                input_buf |= JOY_A;
             if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_B))
                input_buf |= JOY_B;
+            if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_L3))
+               input_buf |= JOY_A | JOY_B;
             if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_SELECT))
                input_buf |= JOY_SELECT;
             if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_START))
                input_buf |= JOY_START;
-            if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_UP))
-               input_buf |= JOY_UP;
-            if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_DOWN))
-               input_buf |= JOY_DOWN;
-            if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_LEFT))
-               input_buf |= JOY_LEFT;
-            if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT))
-               input_buf |= JOY_RIGHT;
+
+            if (dpad_enabled)
+            {
+               if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_UP))
+                  input_buf |= JOY_UP;
+               if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_DOWN))
+                  input_buf |= JOY_DOWN;
+               if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_LEFT))
+                  input_buf |= JOY_LEFT;
+               if (ret & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT))
+                  input_buf |= JOY_RIGHT;
+            }
          }
          else
          {
             for (i = 0; i < MAX_BUTTONS; i++)
                input_buf |= input_cb(player, RETRO_DEVICE_JOYPAD, 0,
                      bindmap[i].retro) ? bindmap[i].nes : 0;
+
+            /* If palette switching is enabled, check if
+             * player 1 has the L2 button held down */
+            if ((player == 0) &&
+                palette_switch_enabled &&
+                input_cb(player, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2))
+            {
+               /* D-Pad left/right are used to switch palettes */
+               palette_prev = (bool)(input_buf & JOY_LEFT);
+               palette_next = (bool)(input_buf & JOY_RIGHT);
+
+               /* Regular D-Pad input is disabled */
+               input_buf &= ~(JOY_UP | JOY_DOWN | JOY_LEFT | JOY_RIGHT);
+            }
          }
 
          /* Turbo A and Turbo B buttons are
           * mapped to Joypad X and Joypad Y
+          * in RetroArch joypad.
+          * Turbo A+B button is mapped to R3
           * in RetroArch joypad.
           *
           * We achieve this by keeping track of
@@ -1679,14 +2067,21 @@ static void FCEUD_UpdateInput(void)
           * the toggle counter and fire or not fire
           * depending on whether the delay value has
           * been reached.
+          *
+          * Each turbo button is activated by
+          * corresponding mapped button
+          * OR mapped Turbo A+B button.
+          * This allows Turbo A+B button to use
+          * the same toggle counters as Turbo A
+          * and Turbo B buttons use separately.
           */
 
          if (nes_input.turbo_enabler[player])
          {
-            /* Handle Turbo A & B buttons */
+            /* Handle Turbo A, B & A+B buttons */
             for (i = 0; i < TURBO_BUTTONS; i++)
             {
-               if (input_cb(player, RETRO_DEVICE_JOYPAD, 0, turbomap[i].retro))
+               if (input_cb(player, RETRO_DEVICE_JOYPAD, 0, turbomap[i].retro) || input_cb(player, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3))
                {
                   if (!turbo_button_toggle[player][i])
                      input_buf |= turbomap[i].nes;
@@ -1702,12 +2097,10 @@ static void FCEUD_UpdateInput(void)
 
       if (!nes_input.up_down_allowed)
       {
-         if (input_buf & (JOY_UP))
-            if (input_buf & (JOY_DOWN))
-               input_buf &= ~((JOY_UP ) | (JOY_DOWN));
-         if (input_buf & (JOY_LEFT))
-            if (input_buf & (JOY_RIGHT))
-               input_buf &= ~((JOY_LEFT ) | (JOY_RIGHT));
+         if ((input_buf & JOY_UP) && (input_buf & JOY_DOWN))
+            input_buf &= ~(JOY_UP | JOY_DOWN);
+         if ((input_buf & JOY_LEFT) && (input_buf & JOY_RIGHT))
+            input_buf &= ~(JOY_LEFT | JOY_RIGHT);
       }
 
       nes_input.JSReturn |= (input_buf & 0xff) << (player << 3);
@@ -1783,6 +2176,38 @@ static void FCEUD_UpdateInput(void)
          FCEU_FDSInsert(-1);        /* Insert or eject the disk */
       prevR = curR;
    }
+
+   /* Handle internal palette switching */
+   if (palette_prev || palette_next)
+   {
+      if (palette_switch_counter == 0)
+      {
+         int new_palette_index = palette_switch_get_current_index();
+
+         if (palette_prev)
+         {
+            if (new_palette_index > 0)
+               new_palette_index--;
+            else
+               new_palette_index = PAL_TOTAL - 1;
+         }
+         else /* palette_next */
+         {
+            if (new_palette_index < PAL_TOTAL - 1)
+               new_palette_index++;
+            else
+               new_palette_index = 0;
+         }
+
+         palette_switch_set_index(new_palette_index);
+      }
+
+      palette_switch_counter++;
+      if (palette_switch_counter >= PALETTE_SWITCH_PERIOD)
+         palette_switch_counter = 0;
+   }
+   else
+      palette_switch_counter = 0;
 }
 
 void FCEUD_Update(uint8 *XBuf, int32 *Buffer, int Count)
@@ -1839,12 +2264,12 @@ static void retro_run_blit(uint8_t *gfx)
 
    if (!ps2) {
       if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&ps2) || !ps2) {
-         printf("Failed to get HW rendering interface!\n");
+         FCEU_printf(" Failed to get HW rendering interface!\n");
          return;
       }
 
       if (ps2->interface_version != RETRO_HW_RENDER_INTERFACE_GSKIT_PS2_VERSION) {
-         printf("HW render interface mismatch, expected %u, got %u!\n",
+         FCEU_printf(" HW render interface mismatch, expected %u, got %u!\n",
                   RETRO_HW_RENDER_INTERFACE_GSKIT_PS2_VERSION, ps2->interface_version);
          return;
       }
@@ -1966,6 +2391,11 @@ size_t retro_serialize_size(void)
 
 bool retro_serialize(void *data, size_t size)
 {
+   /* Cannot save state while Game Genie
+    * screen is open */
+   if (geniestage == 1)
+      return false;
+
    if (size != retro_serialize_size())
       return false;
 
@@ -1976,6 +2406,11 @@ bool retro_serialize(void *data, size_t size)
 
 bool retro_unserialize(const void * data, size_t size)
 {
+   /* Cannot load state while Game Genie
+    * screen is open */
+   if (geniestage == 1)
+      return false;
+
    if (size != retro_serialize_size())
       return false;
 
@@ -2338,77 +2773,174 @@ static const struct cartridge_db famicom_4p_db_list[] =
    }
 };
 
-#ifdef _WIN32
-static char slash = '\\';
-#else
-static char slash = '/';
-#endif
-
-bool retro_load_game(const struct retro_game_info *game)
+bool retro_load_game(const struct retro_game_info *info)
 {
    unsigned i, j;
-   char* dir=NULL;
-   char* sav_dir=NULL;
+   const char *system_dir = NULL;
    size_t fourscore_len = sizeof(fourscore_db_list)   / sizeof(fourscore_db_list[0]);
    size_t famicom_4p_len = sizeof(famicom_4p_db_list) / sizeof(famicom_4p_db_list[0]);
    enum retro_pixel_format rgb565;
 
    struct retro_input_descriptor desc[] = {
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "D-Pad Left" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "D-Pad Up" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "D-Pad Down" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "B" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "A" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,   "Select" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,    "Start" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "(VSSystem) Insert Coin" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,     "(FDS) Disk Side Change" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,     "(FDS) Insert/Eject Disk" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Turbo A" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Turbo B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "(FDS) Disk Side Change" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "(FDS) Insert/Eject Disk" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
 
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "D-Pad Left" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "D-Pad Up" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "D-Pad Down" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "B" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "A" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,   "Select" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,    "Start" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Turbo A" },
-      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Turbo B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
 
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "D-Pad Left" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "D-Pad Up" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "D-Pad Down" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "B" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "A" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,   "Select" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,    "Start" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Turbo A" },
-      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Turbo B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
 
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,  "D-Pad Left" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,    "D-Pad Up" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,  "D-Pad Down" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT, "D-Pad Right" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,     "B" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,     "A" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,   "Select" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,    "Start" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,     "Turbo A" },
-      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,     "Turbo B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
 
       { 0 },
    };
+
+   struct retro_input_descriptor desc_ps[] = { /* ps: palette switching */
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2,     "Switch Palette (+ Left/Right)" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,     "(VSSystem) Insert Coin" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,      "(FDS) Disk Side Change" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,      "(FDS) Insert/Eject Disk" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
+
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
+
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 2, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
+
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "D-Pad Left" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,     "D-Pad Up" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,   "D-Pad Down" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,  "D-Pad Right" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B,      "B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A,      "A" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3,     "A+B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,  "Start" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X,      "Turbo A" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y,      "Turbo B" },
+      { 3, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R3,     "Turbo A+B" },
+
+      { 0 },
+   };
+
    size_t desc_base = 64;
    struct retro_memory_descriptor descs[64 + 4];
    struct retro_memory_map        mmaps;
 
-   if (!game)
-      return false;
+   struct retro_game_info_ext *info_ext = NULL;
+   const uint8_t *content_data          = NULL;
+   size_t content_size                  = 0;
+   char content_path[2048]              = {0};
+
+   /* Attempt to fetch extended game info */
+   if (environ_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &info_ext) && info_ext)
+   {
+      content_data = (const uint8_t *)info_ext->data;
+      content_size = info_ext->size;
+
+      if (info_ext->file_in_archive)
+      {
+         /* We don't have a 'physical' file in this
+          * case, but the core still needs a filename
+          * in order to detect the region of iNES v1.0
+          * ROMs. We therefore fake it, using the content
+          * directory, canonical content name, and content
+          * file extension */
+         snprintf(content_path, sizeof(content_path), "%s%c%s.%s",
+               info_ext->dir,
+               PATH_DEFAULT_SLASH_C(),
+               info_ext->name,
+               info_ext->ext);
+      }
+      else
+         strlcpy(content_path, info_ext->full_path,
+               sizeof(content_path));
+   }
+   else
+   {
+      if (!info || string_is_empty(info->path))
+         return false;
+
+      strlcpy(content_path, info->path,
+            sizeof(content_path));
+   }
 
 #ifdef FRONTEND_SUPPORTS_RGB565
    rgb565 = RETRO_PIXEL_FORMAT_RGB565;
@@ -2447,12 +2979,8 @@ bool retro_load_game(const struct retro_game_info *game)
    fceu_video_out = (uint16_t*)malloc(FB_WIDTH * FB_HEIGHT * sizeof(uint16_t));
 #endif
 
-   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
-
-   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir)
-      FCEUI_SetBaseDirectory(dir);
-   if (environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &sav_dir) && sav_dir)
-      FCEUI_SetSaveDirectory(sav_dir);
+   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir) && system_dir)
+      FCEUI_SetBaseDirectory(system_dir);
 
    memset(base_palette, 0, sizeof(base_palette));
 
@@ -2461,19 +2989,23 @@ bool retro_load_game(const struct retro_game_info *game)
    FCEUI_SetSoundVolume(sndvolume);
    FCEUI_Sound(sndsamplerate);
 
-   GameInfo = (FCEUGI*)FCEUI_LoadGame(game->path, (uint8_t*)game->data, game->size);
+   GameInfo = (FCEUGI*)FCEUI_LoadGame(content_path, content_data, content_size,
+         frontend_post_load_init);
+
    if (!GameInfo)
    {
-      struct retro_message msg;
-      char msg_local[256];
-
-      sprintf(msg_local, "ROM loading failed...");
-      msg.msg    = msg_local;
-      msg.frames = 360;
-      if (environ_cb)
-         environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, (void*)&msg);
+#if 0
+      /* An error message here is superfluous - the frontend
+       * will report that content loading has failed */
+      FCEUD_DispMessage(RETRO_LOG_ERROR, 3000, "ROM loading failed...");
+#endif
       return false;
    }
+
+   if (palette_switch_enabled)
+      environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc_ps);
+   else
+      environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
 
    for (i = 0; i < MAX_PORTS; i++) {
       FCEUI_SetInput(i, SI_GAMEPAD, &nes_input.JSReturn, 0);
@@ -2482,7 +3014,8 @@ bool retro_load_game(const struct retro_game_info *game)
 
    external_palette_exist = ipalette;
    if (external_palette_exist)
-      FCEU_printf(" Loading custom palette: %s%cnes.pal\n", dir, slash);
+      FCEU_printf(" Loading custom palette: %s%cnes.pal\n",
+            system_dir, PATH_DEFAULT_SLASH_C());
 
    /* Save region and dendy mode for region-auto detect */
    systemRegion = (dendy << 1) | (retro_get_region() & 1);
@@ -2491,7 +3024,6 @@ bool retro_load_game(const struct retro_game_info *game)
 
    ResetPalette();
    FCEUD_SoundToggle();
-   set_variables();
    check_variables(true);
    PowerNES();
 

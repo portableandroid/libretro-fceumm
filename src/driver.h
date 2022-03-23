@@ -1,7 +1,7 @@
 #ifndef _FCEU_DRIVER_H
 #define _FCEU_DRIVER_H
 
-#include <stdio.h>
+#include <libretro.h>
 
 #ifdef  __cplusplus
 extern "C" {
@@ -27,8 +27,6 @@ extern "C" {
 #define FCEUNPCMD_LOADCHEATS  0x82
 #define FCEUNPCMD_TEXT        0x90
 
-FILE *FCEUD_UTF8fopen(const char *fn, const char *mode);
-
 /* This makes me feel dirty for some reason. */
 void FCEU_printf(char *format, ...);
 #define FCEUI_printf FCEU_printf
@@ -39,7 +37,9 @@ void FCEUD_SetPalette(uint8 index, uint8 r, uint8 g, uint8 b);
 /* Displays an error.  Can block or not. */
 void FCEUD_PrintError(char *s);
 void FCEUD_Message(char *s);
-void FCEUD_DispMessage(char *m);
+
+void FCEUD_DispMessage(enum retro_log_level level, unsigned duration, const char *str);
+void FCEU_DispMessage(enum retro_log_level level, unsigned duration, const char *format, ...);
 
 int FCEUI_BeginWaveRecord(char *fn);
 int FCEUI_EndWaveRecord(void);
@@ -101,7 +101,14 @@ void FCEUI_DisableSpriteLimitation(int a);
 /* -1 = no change, 0 = show, 1 = hide, 2 = internal toggle */
 void FCEUI_SetRenderDisable(int sprites, int bg);
 
-FCEUGI *FCEUI_LoadGame(const char *name, uint8_t *buf, size_t bufsize);
+/* frontend_post_load_init_cb() is called immediately
+ * after loading the ROM, allowing any frontend
+ * initialisation that is dependent on ROM type to
+ * be performed before the regular internal post-load
+ * initialisation */
+typedef void (*frontend_post_load_init_cb_t)(void);
+FCEUGI *FCEUI_LoadGame(const char *name, const uint8_t *databuf, size_t databufsize,
+      frontend_post_load_init_cb_t frontend_post_load_init_cb);
 
 #ifdef COPYFAMI
 /* Fake UNIF board to start new CFHI instance */
@@ -140,12 +147,9 @@ void FCEUI_FrameSkip(int x);
 /* First and last scanlines to render, for ntsc and pal emulation. */
 void FCEUI_SetRenderedLines(int ntscf, int ntscl, int palf, int pall);
 
-/* Sets the base directory(save states, snapshots, etc. are saved in directories
-   below this directory. */
-void FCEUI_SetBaseDirectory(char *dir);
-
-void FCEUI_SetSaveDirectory(char *sav_dir);
-
+/* Sets the base directory (bios and palette files are saved
+   in this directory. */
+void FCEUI_SetBaseDirectory(const char *dir);
 
 /* Tells FCE Ultra to copy the palette data pointed to by pal and use it.
    Data pointed to by pal needs to be 64*3 bytes in length.
@@ -173,8 +177,6 @@ void FCEUI_LoadMovie(char *fname);
 
 int32 FCEUI_GetDesiredFPS(void);
 void FCEUI_SaveSnapshot(void);
-void FCEU_DispMessage(char *format, ...);
-#define FCEUI_DispMessage FCEU_DispMessage
 
 int FCEUI_DecodePAR(const char *code, uint16 *a, uint8 *v, int *c, int *type);
 int FCEUI_DecodeGG(const char *str, uint16 *a, uint8 *v, int *c);
@@ -233,7 +235,7 @@ int FCEUI_FDSInsert(int oride);
 int FCEUI_FDSEject(void);
 void FCEUI_FDSSelect(void);
 
-int FCEUI_DatachSet(const uint8 *rcode);
+int FCEUI_DatachSet(uint8 *rcode);
 
 #ifdef  __cplusplus
 }
