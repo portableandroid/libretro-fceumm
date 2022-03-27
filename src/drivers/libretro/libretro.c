@@ -1867,7 +1867,9 @@ static void check_variables(bool startup)
          enable_apu &= ~(1 << i);
    }
    set_apu_channels(enable_apu);
-
+#ifdef PORTANDROID
+   if(!startup)
+#endif
    update_dipswitch();
 
    update_option_visibility();
@@ -3001,6 +3003,18 @@ bool retro_load_game(const struct retro_game_info *info)
 #endif
       return false;
    }
+
+#ifdef PORTANDROID
+   //Set internal id
+   if(GameInfo->gameid > 0) {
+      char id_str[32];
+      sprintf(id_str, "%d", GameInfo->gameid);
+      cb_itf.cb_rom_info_set(NULL, id_str, 0);
+   }else if(iNESCart.mapper == 105) {
+       cb_itf.cb_rom_info_set(NULL, "NWC", 0);
+   }
+
+#endif
 
    if (palette_switch_enabled)
       environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc_ps);

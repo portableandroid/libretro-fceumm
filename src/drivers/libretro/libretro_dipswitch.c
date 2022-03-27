@@ -1280,16 +1280,21 @@ static void update_dipswitch_nwc(void)
    };
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-      dpsw_nwc = atoi(var.value);
-
-   if (GameInfo->cspecial != dpsw_nwc)
-   {
-      GameInfo->cspecial = dpsw_nwc;
-#ifdef DEBUG
-      FCEU_printf("Dipswitch changed = %d%d%d%d\n", (dpsw_nwc >> 0) & 1,
-         (dpsw_nwc >> 1) & 1, (dpsw_nwc >> 2) & 1, (dpsw_nwc >> 3) & 1);
+#ifdef PORTANDROID
+    {
 #endif
-   }
+        dpsw_nwc = atoi(var.value);
+
+        if (GameInfo->cspecial != dpsw_nwc) {
+            GameInfo->cspecial = dpsw_nwc;
+#ifdef DEBUG
+            FCEU_printf("Dipswitch changed = %d%d%d%d\n", (dpsw_nwc >> 0) & 1,
+               (dpsw_nwc >> 1) & 1, (dpsw_nwc >> 2) & 1, (dpsw_nwc >> 3) & 1);
+#endif
+        }
+#ifdef PORTANDROID
+    }
+#endif
 }
 
 void set_dipswitch_variables(unsigned current_index, struct retro_core_option_v2_definition *vars)
