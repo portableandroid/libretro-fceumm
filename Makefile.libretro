@@ -134,6 +134,8 @@ else ifeq ($(platform), tvos-arm64)
 	ifeq ($(IOSSDK),)
 		IOSSDK := $(shell xcodebuild -version -sdk appletvos Path)
 	endif
+	CC = clang -arch arm64 -isysroot $(IOSSDK)
+	CXX = clang++ -arch arm64 -isysroot $(IOSSDK)
 
 # Theos iOS
 else ifeq ($(platform), theos_ios)
@@ -247,7 +249,7 @@ else ifeq ($(platform), rpi3_64)
 	CFLAGS += -fomit-frame-pointer -fstrict-aliasing -ffast-math
 
 # Raspberry Pi 4 (64-bit)
-else ifeq ($(platform), rpi4)
+else ifneq (,$(findstring rpi4,$(platform)))
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
@@ -262,7 +264,7 @@ else ifneq (,$(filter $(platform), ps3 psl1ght))
     PLATFORM_DEFINES += -D__PS3__
     
     ifeq ($(platform), psl1ght)
-        PLATFORM_DEFINES += -D__PSL1GHT__
+        PLATFORM_DEFINES += -D__PSL1GHT__ -I$(PS3DEV)/ppu/include
     endif
 
     TARGET := $(TARGET_NAME)_libretro_$(platform).a

@@ -362,13 +362,15 @@ static void CheckHInfo(void)
       iNESCart.mirror = 2;
 
    if (tofix) {
+      size_t gigastr_len;
       char gigastr[768];
       strcpy(gigastr, " The iNES header contains incorrect information.  For now, the information will be corrected in RAM. ");
+      gigastr_len = strlen(gigastr);
       if (tofix & 1)
-         sprintf(gigastr + strlen(gigastr), "Current mapper # is %d. The mapper number should be set to %d. ", current_mapper, iNESCart.mapper);
+         sprintf(gigastr + gigastr_len, "Current mapper # is %d. The mapper number should be set to %d. ", current_mapper, iNESCart.mapper);
       if (tofix & 2) {
          uint8 *mstr[3] = { (uint8_t*)"Horizontal", (uint8_t*)"Vertical", (uint8_t*)"Four-screen" };
-         sprintf(gigastr + strlen(gigastr), "Current mirroring is %s. Mirroring should be set to \"%s\". ", mstr[cur_mirr & 3], mstr[iNESCart.mirror & 3]);
+         sprintf(gigastr + gigastr_len, "Current mirroring is %s. Mirroring should be set to \"%s\". ", mstr[cur_mirr & 3], mstr[iNESCart.mirror & 3]);
       }
       if (tofix & 4)
          strcat(gigastr, "The battery-backed bit should be set.  ");
@@ -376,19 +378,19 @@ static void CheckHInfo(void)
          strcat(gigastr, "This game should not have any CHR ROM.  ");
       if (tofix & 16) {
          uint8 *rstr[4] = { (uint8*)"NTSC", (uint8*)"PAL", (uint8*)"Multi", (uint8*)"Dendy" };
-         sprintf(gigastr + strlen(gigastr), "This game should run with \"%s\" timings.", rstr[iNESCart.region]);
+         sprintf(gigastr + gigastr_len, "This game should run with \"%s\" timings.", rstr[iNESCart.region]);
       }
       if (tofix & 32) {
          unsigned PRGRAM = iNESCart.PRGRamSize + iNESCart.PRGRamSaveSize;
          unsigned CHRRAM = iNESCart.CHRRamSize + iNESCart.CHRRamSaveSize;
          if (PRGRAM || CHRRAM) {
             if (iNESCart.PRGRamSaveSize == 0)
-               sprintf(gigastr + strlen(gigastr), "workram: %d KB, ", PRGRAM / 1024);
+               sprintf(gigastr + gigastr_len, "workram: %d KB, ", PRGRAM / 1024);
             else if (iNESCart.PRGRamSize == 0)
-               sprintf(gigastr + strlen(gigastr), "saveram: %d KB, ", PRGRAM / 1024);
+               sprintf(gigastr + gigastr_len, "saveram: %d KB, ", PRGRAM / 1024);
             else
-               sprintf(gigastr + strlen(gigastr), "workram: %d KB (%dKB battery-backed), ", PRGRAM / 1024, iNESCart.PRGRamSaveSize / 1024);
-            sprintf(gigastr + strlen(gigastr), "chrram: %d KB.", (CHRRAM + iNESCart.CHRRamSaveSize) / 1024);
+               sprintf(gigastr + gigastr_len, "workram: %d KB (%dKB battery-backed), ", PRGRAM / 1024, iNESCart.PRGRamSaveSize / 1024);
+            sprintf(gigastr + gigastr_len, "chrram: %d KB.", (CHRRAM + iNESCart.CHRRamSaveSize) / 1024);
          }
       }
       strcat(gigastr, "\n");
@@ -581,7 +583,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "BANDAI 24C01",             159, Mapper159_Init         ) /* Different type of EEPROM on the  bandai board */
 	INES_BOARD( "SA009",                    160, SA009_Init             )
 /*    INES_BOARD( "",                            161, Mapper161_Init ) */
-	INES_BOARD( "",                         162, Mapper162_Init         )
+	INES_BOARD( "Waixing FS304",            162, Mapper162_Init         )
 	INES_BOARD( "",                         163, Mapper163_Init         )
 	INES_BOARD( "",                         164, Mapper164_Init         )
 	INES_BOARD( "",                         165, Mapper165_Init         )
@@ -597,7 +599,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "",                         175, Mapper175_Init         )
 	INES_BOARD( "BMCFK23C",                 176, Mapper176_Init         )
 	INES_BOARD( "",                         177, Mapper177_Init         )
-	INES_BOARD( "",                         178, Mapper178_Init         )
+	INES_BOARD( "Waixing FS305",            178, Mapper178_Init         )
 /*    INES_BOARD( "",                            179, Mapper179_Init ) */
 	INES_BOARD( "",                         180, Mapper180_Init         )
 	INES_BOARD( "",                         181, Mapper181_Init         )
@@ -611,21 +613,21 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "",                         189, Mapper189_Init         )
 	INES_BOARD( "",                         190, Mapper190_Init         )
 	INES_BOARD( "",                         191, Mapper191_Init         )
-	INES_BOARD( "TW MMC3+VRAM Rev. B",      192, Mapper192_Init         )
+	INES_BOARD( "Waixing FS308",            192, Mapper192_Init         )
 	INES_BOARD( "NTDEC TC-112",             193, Mapper193_Init         ) /* War in the Gulf */
 	INES_BOARD( "TW MMC3+VRAM Rev. C",      194, Mapper194_Init         )
-	INES_BOARD( "TW MMC3+VRAM Rev. D",      195, Mapper195_Init         )
+	INES_BOARD( "Waixing FS303",            195, Mapper195_Init         )
 	INES_BOARD( "",                         196, Mapper196_Init         )
 	INES_BOARD( "",                         197, Mapper197_Init         )
 	INES_BOARD( "TW MMC3+VRAM Rev. E",      198, Mapper198_Init         )
-	INES_BOARD( "",                         199, Mapper199_Init         )
+	INES_BOARD( "Waixing FS309",            199, Mapper199_Init         )
 	INES_BOARD( "",                         200, Mapper200_Init         )
 	INES_BOARD( "21-in-1",                  201, Mapper201_Init         )
 	INES_BOARD( "",                         202, Mapper202_Init         )
 	INES_BOARD( "",                         203, Mapper203_Init         )
 	INES_BOARD( "",                         204, Mapper204_Init         )
 	INES_BOARD( "BMC 15-in-1/3-in-1",       205, Mapper205_Init         )
-	INES_BOARD( "NAMCOT 108 Rev. C",        206, Mapper206_Init         ) /* Deprecated, Used to be "DEIROM" whatever it means, but actually simple version of MMC3 */
+	INES_BOARD( "Nintendo DE(1)ROM",        206, Mapper206_Init         )
 	INES_BOARD( "TAITO X1-005 Rev. B",      207, Mapper207_Init         )
 	INES_BOARD( "",                         208, Mapper208_Init         )
 	INES_BOARD( "HUMMER/JY BOARD",          209, Mapper209_Init         )
@@ -679,7 +681,7 @@ INES_BOARD_BEGIN()
 	/* NES 2.0 MAPPERS */
 
 	INES_BOARD( "OneBus",                   256, UNLOneBus_Init         )
-	INES_BOARD( "158B",                     258, UNL158B_Init           )
+	INES_BOARD( "158B",                     258, UNL8237_Init           )
 	INES_BOARD( "F-15",                     259, BMCF15_Init            )
 	INES_BOARD( "HPxx / HP2018-A",          260, BMCHPxx_Init           )
 	INES_BOARD( "810544-C-A1",              261, BMC810544CA1_Init      )
@@ -706,7 +708,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "Kasheng 2-in-1 ",          291, Mapper291_Init         )
 	INES_BOARD( "DRAGONFIGHTER",            292, UNLBMW8544_Init        )
 	INES_BOARD( "NewStar 12-in-1/7-in-1",   293, Mapper293_Init         )
-	INES_BOARD( "MMC3 BMC PIRATE",          294, Mapper134_Init         ) /* nesdev redirects this as mapper 134 */
+	INES_BOARD( "63-1601 ",                 294, Mapper294_Init         )
 	INES_BOARD( "YY860216C",                295, Mapper295_Init         )
 	INES_BOARD( "TXC 01-22110-000",         297, Mapper297_Init         )
 	INES_BOARD( "TF1201",                   298, UNLTF1201_Init         )
@@ -721,6 +723,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "KS7037",                   307, UNLKS7037_Init         )
 	INES_BOARD( "TH2131-1",                 308, UNLTH21311_Init        )
 	INES_BOARD( "LH51",                     309, LH51_Init              )
+	INES_BOARD( "K-1053",                   310, Mapper310_Init         )
 	INES_BOARD( "KS7013B",                  312, UNLKS7013B_Init        )
 	INES_BOARD( "RESET-TXROM",              313, BMCRESETTXROM_Init     )
 	INES_BOARD( "64in1NoRepeat",            314, BMC64in1nr_Init        )
@@ -747,6 +750,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "K-3006",                   339, BMCK3006_Init          )
 	INES_BOARD( "K-3036",                   340, BMCK3036_Init          )
 	INES_BOARD( "TJ-03",                    341, BMCTJ03_Init           )
+	INES_BOARD( "COOLGIRL",                 342, COOLGIRL_Init          )
 	INES_BOARD( "GN-26",                    344, BMCGN26_Init           )
 	INES_BOARD( "L6IN1",                    345, BMCL6IN1_Init          )
 	INES_BOARD( "KS7012",                   346, UNLKS7012_Init         )
@@ -756,6 +760,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "891227",                   350, BMC891227_Init         )
 	INES_BOARD( "Techline XB",              351, Mapper351_Init         )
 	INES_BOARD( "Super Mario Family",       353, Mapper353_Init         )
+	INES_BOARD( "FAM250/81-01-39-C/SCHI-24",354, Mapper354_Init         )
 	INES_BOARD( "3D-BLOCK",                 355, UNL3DBlock_Init        )
 	INES_BOARD( "7-in-1 Rockman (JY-208)",  356, Mapper356_Init         )
 	INES_BOARD( "Bit Corp 4-in-1",          357, Mapper357_Init         )
@@ -812,10 +817,22 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "820401/T-217",             436, Mapper436_Init         )
 	INES_BOARD( "NTDEC TH2348",             437, Mapper437_Init         )
 	INES_BOARD( "K-3071",                   438, Mapper438_Init         )
+	INES_BOARD( "850335C",                  441, Mapper441_Init         )
 	INES_BOARD( "NC-3000M",                 443, Mapper443_Init         )
-	INES_BOARD( "NC-7000M",                 444, Mapper444_Init         )
+	INES_BOARD( "NC-7000M/NC-8000M",        444, Mapper444_Init         )
+	INES_BOARD( "22-in-1 King Series",      449, Mapper449_Init         )
 	INES_BOARD( "DS-9-27",                  452, Mapper452_Init         )
+	INES_BOARD( "N625836",                  455, Mapper455_Init         )
 	INES_BOARD( "K6C3001A",                 456, Mapper456_Init         )
+	INES_BOARD( "8-in-1",                   459, Mapper459_Init         )
+	INES_BOARD( "FC-29-40/K-3101",        	460, Mapper460_Init         )
+	INES_BOARD( "0324",                 	461, Mapper461_Init         )
+	INES_BOARD( "YH810X1",                 	463, Mapper463_Init         )
+	INES_BOARD( "NTDEC 9012",          	464, Mapper464_Init         )
+	INES_BOARD( "ET-120",                 	465, Mapper465_Init         )
+	INES_BOARD( "Keybyte Computer",        	466, Mapper466_Init         )
+	INES_BOARD( "47-2",                 	467, Mapper467_Init         )
+	INES_BOARD( "BlazePro CPLD",           	468, Mapper468_Init         )
 	INES_BOARD( "SA-9602B",                 513, SA9602B_Init           )
 	INES_BOARD( "Brilliant Com Cocoma Pack", 516, Mapper516_Init        )
 	INES_BOARD( "DANCE2000",                518, UNLD2000_Init          )

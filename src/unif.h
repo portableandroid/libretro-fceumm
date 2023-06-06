@@ -139,7 +139,6 @@ void UNLYOKO_Init(CartInfo *info);
 void UNROM_Init(CartInfo *info);
 void UNROM512_Init(CartInfo *info);
 void COOLBOY_Init(CartInfo *info);
-void UNL158B_Init(CartInfo *info);
 void UNLBMW8544_Init(CartInfo *info);
 void UNLEH8813A_Init(CartInfo *info);
 void BMCHP898F_Init(CartInfo *info);
@@ -187,11 +186,7 @@ void WAIXINGFS005_Init(CartInfo *info);
 
 void Mapper422_Init(CartInfo *info);
 void Mapper444_Init(CartInfo *info);
-
-#ifdef COPYFAMI
-void MapperCopyFamiMMC3_Init(CartInfo *info);
-void MapperCopyFami_Init(CartInfo *info);
-#endif
+void COOLGIRL_Init(CartInfo* info);		/* m342 */
 
 extern uint8 *UNIFchrrama;	/* Meh.  So I can stop CHR RAM
 							 * bank switcherooing with certain boards...

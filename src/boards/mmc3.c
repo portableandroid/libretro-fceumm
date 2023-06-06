@@ -597,7 +597,7 @@ static void M49PW(uint32 A, uint8 V) {
 		V |= (EXPREGS[0] & 0xC0) >> 2;
 		setprg8(A, V);
 	} else
-		setprg32(0x8000, (EXPREGS[0] >> 4) & 3);
+		setprg32(0x8000, (EXPREGS[0] >> 4) & 15);
 }
 
 static void M49CW(uint32 A, uint8 V) {
@@ -657,9 +657,20 @@ static void M52PW(uint32 A, uint8 V) {
 
 static void M52CW(uint32 A, uint8 V) {
 	uint32 mask = 0xFF ^ ((EXPREGS[0] & 0x40) << 1);
-/*	uint32 bank = (((EXPREGS[0]>>3)&4)|((EXPREGS[0]>>1)&2)|((EXPREGS[0]>>6)&(EXPREGS[0]>>4)&1))<<7; */
 	uint32 bank = (((EXPREGS[0] >> 4) & 2) | (EXPREGS[0] & 4) | ((EXPREGS[0] >> 6) & (EXPREGS[0] >> 4) & 1)) << 7;	/* actually 256K CHR banks index bits is inverted! */
-	setchr1(A, bank | (V & mask));
+	if (CHRRAM && (EXPREGS[0] &3) ==3)
+		setchr1r(0x10, A, bank | (V & mask));
+	else
+		setchr1(A, bank | (V & mask));
+}
+
+static void M52S14CW(uint32 A, uint8 V) {
+	uint32 mask = 0xFF ^ ((EXPREGS[0] & 0x40) << 1);
+	uint32 bank = EXPREGS[0] <<3 &0x80 | EXPREGS[0] <<7 &0x300;
+	if (EXPREGS[0] &0x20)
+		setchr1r(0x10, A, bank | (V & mask));
+	else
+		setchr1(A, bank | (V & mask));
 }
 
 static DECLFW(M52Write) {
@@ -686,11 +697,18 @@ static void M52Power(void) {
 
 void Mapper52_Init(CartInfo *info) {
 	GenMMC3_Init(info, 256, 256, 8, info->battery);
-	cwrap = M52CW;
+	isRevB = 0; /* For Aladdin in NT-8062 */
+	cwrap = info->submapper ==14? M52S14CW: M52CW;
 	pwrap = M52PW;
 	info->Reset = M52Reset;
 	info->Power = M52Power;
 	AddExState(EXPREGS, 2, 0, "EXPR");
+	if (info->iNES2 && (info->submapper ==13 || info->submapper ==14)) {
+		CHRRAMSIZE = 8192;
+		CHRRAM = (uint8*)FCEU_gmalloc(CHRRAMSIZE);
+		SetupCartCHRMapping(0x10, CHRRAM, CHRRAMSIZE, 1);
+		AddExState(CHRRAM, CHRRAMSIZE, 0, "CHRR");		
+	}
 }
 
 /* ---------------------------- Mapper 76 ------------------------------- */
@@ -998,31 +1016,6 @@ void Mapper194_Init(CartInfo *info) {
 	AddExState(CHRRAM, CHRRAMSIZE, 0, "CHRR");
 }
 
-/* ---------------------------- Mapper 195 ------------------------------- */
-static void M195CW(uint32 A, uint8 V) {
-	if (V <= 3)	/* Crystalis (c).nes, Captain Tsubasa Vol 2 - Super Striker (C) */
-		setchr1r(0x10, A, V);
-	else
-		setchr1r(0, A, V);
-}
-
-static void M195Power(void) {
-	GenMMC3Power();
-	setprg4r(0x10, 0x5000, 2);
-	SetWriteHandler(0x5000, 0x5fff, CartBW);
-	SetReadHandler(0x5000, 0x5fff, CartBR);
-}
-
-void Mapper195_Init(CartInfo *info) {
-	GenMMC3_Init(info, 512, 256, 16, info->battery);
-	cwrap = M195CW;
-	info->Power = M195Power;
-	CHRRAMSIZE = 4096;
-	CHRRAM = (uint8*)FCEU_gmalloc(CHRRAMSIZE);
-	SetupCartCHRMapping(0x10, CHRRAM, CHRRAMSIZE, 1);
-	AddExState(CHRRAM, CHRRAMSIZE, 0, "CHRR");
-}
-
 /* ---------------------------- Mapper 196 ------------------------------- */
 /* MMC3 board with optional command address line connection, allows to
  * make three-four different wirings to IRQ address lines and separately to
@@ -1102,21 +1095,89 @@ void UNLMaliSB_Init(CartInfo *info) {
 
 /* ---------------------------- Mapper 197 ------------------------------- */
 
-static void M197CW(uint32 A, uint8 V) {
-	if (A == 0x0000)
-		setchr4(0x0000, V >> 1);
-	else if (A == 0x1000)
-		setchr2(0x1000, V);
-	else if (A == 0x1400)
-		setchr2(0x1800, V);
+static void M197S0CW(uint32 A, uint8 V) {
+	switch(A) {
+	case 0x0000: setchr2(0x0000, V); break;
+	case 0x0400: setchr2(0x0800, V); break;
+	case 0x1000: setchr2(0x1000, V); break;
+	case 0x1400: setchr2(0x1800, V); break;
+	}
+}
+
+static void M197S1CW(uint32 A, uint8 V) {
+	switch(A) {
+	case 0x0800: setchr2(0x0000, V); break;
+	case 0x0C00: setchr2(0x0800, V); break;
+	case 0x1800: setchr2(0x1000, V); break;
+	case 0x1C00: setchr2(0x1800, V); break;
+	}
+}
+
+static void M197S2CW(uint32 A, uint8 V) {
+	switch(A) {
+	case 0x0000: setchr2(0x0000, V); break;
+	case 0x0C00: setchr2(0x0800, V); break;
+	case 0x1000: setchr2(0x1000, V); break;
+	case 0x1C00: setchr2(0x1800, V); break;
+	}
+}
+
+static void M197S3CW(uint32 A, uint8 V) {
+	switch(A) {
+	case 0x0000: setchr2(0x0000, V | EXPREGS[0] <<7 &0x100); break;
+	case 0x0400: setchr2(0x0800, V | EXPREGS[0] <<7 &0x100); break;
+	case 0x1000: setchr2(0x1000, V | EXPREGS[0] <<7 &0x100); break;
+	case 0x1400: setchr2(0x1800, V | EXPREGS[0] <<7 &0x100); break;
+	}
+}
+
+static void M197S3PW(uint32 A, uint8 V) {
+	setprg8(A, V &(EXPREGS[0] &8? 0x0F: 0x1F) | EXPREGS[0] <<4);
+}
+
+static DECLFW(Mapper197S3Write) {
+	if (A001B &0x80) {
+		EXPREGS[0] =V;
+		FixMMC3PRG(MMC3_cmd);
+		FixMMC3CHR(MMC3_cmd);
+	}
+}
+
+static void Mapper197S3_Reset(void) {
+	EXPREGS[0] =0;
+	FixMMC3PRG(MMC3_cmd);
+	FixMMC3CHR(MMC3_cmd);
+}
+
+static void Mapper197S3_Power(void) {
+	EXPREGS[0] =0;
+	GenMMC3Power();
+	SetWriteHandler(0x6000, 0x7fff, Mapper197S3Write);
 }
 
 void Mapper197_Init(CartInfo *info) {
-	GenMMC3_Init(info, 128, 512, 8, 0);
-	cwrap = M197CW;
+	GenMMC3_Init(info, 128, 512, 8, 0);	
+	switch(info->submapper) {
+		case 0: cwrap =M197S0CW; break;
+		case 1: cwrap =M197S1CW; break;
+		case 2: cwrap =M197S2CW; break;
+		case 3: cwrap =M197S3CW;
+		        pwrap =M197S3PW;
+			info->Power = Mapper197S3_Power;
+			info->Reset = Mapper197S3_Reset;
+			break;
+	}
+	AddExState(EXPREGS, 1, 0, "EXPR");
 }
 
 /* ---------------------------- Mapper 198 ------------------------------- */
+
+static void M198Power(void) {
+	GenMMC3Power();
+	setprg4r(0x10, 0x5000, 2);
+	SetWriteHandler(0x5000, 0x5fff, CartBW);
+	SetReadHandler(0x5000, 0x5fff, CartBR);
+}
 
 static void M198PW(uint32 A, uint8 V) {
 	if (V >= 0x50)	/* Tenchi o Kurau II - Shokatsu Koumei Den (J) (C).nes */
@@ -1128,7 +1189,7 @@ static void M198PW(uint32 A, uint8 V) {
 void Mapper198_Init(CartInfo *info) {
 	GenMMC3_Init(info, 1024, 0, 16, info->battery);
 	pwrap = M198PW;
-	info->Power = M195Power;
+	info->Power = M198Power;
 }
 
 /* ---------------------------- Mapper 205 ------------------------------ */

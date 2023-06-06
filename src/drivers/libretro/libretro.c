@@ -51,17 +51,19 @@
 #define MAX_PORTS 2   /* max controller ports,
                        * port 0 for player 1/3, port 1 for player 2/4 */
 
-#define RETRO_DEVICE_AUTO        RETRO_DEVICE_JOYPAD
-#define RETRO_DEVICE_GAMEPAD     RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1)
-#define RETRO_DEVICE_ZAPPER      RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  0)
-#define RETRO_DEVICE_ARKANOID    RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  1)
+#define RETRO_DEVICE_AUTO         RETRO_DEVICE_JOYPAD
+#define RETRO_DEVICE_GAMEPAD      RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 1)
+#define RETRO_DEVICE_ZAPPER       RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  0)
+#define RETRO_DEVICE_ARKANOID     RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  1)
+#define RETRO_DEVICE_POWERPADA    RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_KEYBOARD, 0)
+#define RETRO_DEVICE_POWERPADB    RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_KEYBOARD, 1)
 
-#define RETRO_DEVICE_FC_ARKANOID RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  2)
-#define RETRO_DEVICE_FC_OEKAKIDS RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  3)
-#define RETRO_DEVICE_FC_SHADOW   RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  4)
-#define RETRO_DEVICE_FC_4PLAYERS RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 2)
+#define RETRO_DEVICE_FC_ARKANOID  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  2)
+#define RETRO_DEVICE_FC_OEKAKIDS  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  3)
+#define RETRO_DEVICE_FC_SHADOW    RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_MOUSE,  4)
+#define RETRO_DEVICE_FC_4PLAYERS  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 2)
 #define RETRO_DEVICE_FC_HYPERSHOT RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 3)
-#define RETRO_DEVICE_FC_AUTO     RETRO_DEVICE_JOYPAD
+#define RETRO_DEVICE_FC_AUTO      RETRO_DEVICE_JOYPAD
 
 #define NES_WIDTH   256
 #define NES_HEIGHT  240
@@ -90,10 +92,11 @@ static retro_audio_sample_batch_t audio_batch_cb = NULL;
 retro_environment_t environ_cb = NULL;
 #ifdef PSP
 static bool crop_overscan;
-#else
-static bool crop_overscan_h;
-static bool crop_overscan_v;
 #endif
+static int crop_overscan_h_left;
+static int crop_overscan_h_right;
+static int crop_overscan_v_top;
+static int crop_overscan_v_bottom;
 
 static bool use_raw_palette;
 static int aspect_ratio_par;
@@ -134,6 +137,13 @@ static const keymap bindmap[] = {
    { RETRO_DEVICE_ID_JOYPAD_RIGHT, JOY_RIGHT },
 };
 
+static const uint32_t powerpadmap[] = {
+   RETROK_q, RETROK_w, RETROK_e, RETROK_r,
+   RETROK_a, RETROK_s, RETROK_d, RETROK_f,
+   RETROK_z, RETROK_x, RETROK_c, RETROK_v,
+};
+
+
 typedef struct {
    bool enable_4player;                /* four-score / 4-player adapter used */
    bool up_down_allowed;               /* disabled simultaneous up+down and left+right dpad combinations */
@@ -145,14 +155,19 @@ typedef struct {
    uint32_t type[MAX_PLAYERS + 1];     /* 4-players + famicom expansion */
 
    /* input data */
-   uint32_t JSReturn;                  /* player input data, 1 byte per player (1-4) */
-   uint32_t MouseData[MAX_PORTS][3];   /* nes mouse data */
-   uint32_t FamicomData[3];            /* Famicom expansion port data */
+   uint32_t JSReturn;                     /* player input data, 1 byte per player (1-4) */
+   uint32_t MouseData[MAX_PORTS][4];      /* nes mouse data */
+   uint32_t FamicomData[3];               /* Famicom expansion port data */
+   uint32_t PowerPadData;
 } NES_INPUT_T;
 
 static NES_INPUT_T nes_input = { 0 };
-enum RetroZapperInputModes{RetroLightgun, RetroMouse, RetroPointer};
-static enum RetroZapperInputModes zappermode = RetroLightgun;
+enum RetroZapperInputModes{RetroCLightgun, RetroSTLightgun, RetroMouse, RetroPointer};
+enum RetroZapperInputModes zappermode = RetroCLightgun;
+enum RetroArkanoidInputModes{RetroArkanoidMouse, RetroArkanoidPointer, RetroArkanoidAbsMouse, RetroArkanoidStelladaptor};
+enum RetroArkanoidInputModes arkanoidmode = RetroArkanoidMouse;
+static int mouseSensitivity = 100;
+extern int switchZapper;
 
 static bool libretro_supports_bitmasks = false;
 static bool libretro_supports_option_categories = false;
@@ -210,6 +225,8 @@ extern CartInfo iNESCart;
 extern CartInfo UNIFCart;
 extern int show_crosshair;
 extern int option_ramstate;
+extern int zapper_trigger_invert_option;
+extern int zapper_sensor_invert_option;
 
 /* emulator-specific callback functions */
 
@@ -347,7 +364,7 @@ void FCEUD_SoundToggle (void)
 }
 
 /*palette for FCEU*/
-#define PAL_INTERNAL 16 /* Number of palettes in palettes[] */
+#define PAL_INTERNAL sizeof(palettes) / sizeof(palettes[0]) /* Number of palettes in palettes[] */
 #define PAL_DEFAULT  (PAL_INTERNAL + 1)
 #define PAL_RAW      (PAL_INTERNAL + 2)
 #define PAL_CUSTOM   (PAL_INTERNAL + 3)
@@ -653,6 +670,78 @@ struct st_palettes palettes[] = {
          0XEFC7FF, 0XFFC3E1, 0XFFCAC6, 0XF2DAAD,
          0XEBE3A0, 0XD2EDA2, 0XBCF4B4, 0XB5F1CE,
          0XB6ECF1, 0XBFBFBF, 0X000000, 0X000000 }
+   },
+   { "digital-prime-fbx", "FBX's Digital Prime palette",
+      { 0x616161, 0x000088, 0x1F0D99, 0x371379,
+         0x561260, 0x5D0010, 0x520E00, 0x3A2308,
+         0x21350C, 0x0D410E, 0x174417, 0x003A1F,
+         0x002F57, 0x000000, 0x000000, 0x000000,
+         0xAAAAAA, 0x0D4DC4, 0x4B24DE, 0x6912CF,
+         0x9014AD, 0x9D1C48, 0x923404, 0x735005,
+         0x5D6913, 0x167A11, 0x138008, 0x127649,
+         0x1C6691, 0x000000, 0x000000, 0x000000,
+         0xFCFCFC, 0x639AFC, 0x8A7EFC, 0xB06AFC,
+         0xDD6DF2, 0xE771AB, 0xE38658, 0xCC9E22,
+         0xA8B100, 0x72C100, 0x5ACD4E, 0x34C28E,
+         0x4FBECE, 0x424242, 0x000000, 0x000000,
+         0xFCFCFC, 0xBED4FC, 0xCACAFC, 0xD9C4FC,
+         0xECC1FC, 0xFAC3E7, 0xF7CEC3, 0xE2CDA7,
+         0xDADB9C, 0xC8E39E, 0xBFE5B8, 0xB2EBC8,
+         0xB7E5EB, 0xACACAC, 0x000000, 0x000000 }
+   },
+   { "magnum-fbx", "FBX's Magnum palette",
+      { 0x696969, 0x00148F, 0x1E029B, 0x3F008A,
+         0x600060, 0x660017, 0x570D00, 0x451B00,
+         0x243400, 0x004200, 0x004500, 0x003C1F,
+         0x00315C, 0x000000, 0x000000, 0x000000,
+         0xAFAFAF, 0x0F51DD, 0x442FF3, 0x7220E2,
+         0xA319B3, 0xAE1C51, 0xA43400, 0x884D00,
+         0x676D00, 0x208000, 0x008B00, 0x007F42,
+         0x006C97, 0x010101, 0x000000, 0x000000,
+         0xFFFFFF, 0x65AAFF, 0x8C96FF, 0xB983FF,
+         0xDD6FFF, 0xEA6FBD, 0xEB8466, 0xDCA21F,
+         0xBAB403, 0x7ECB07, 0x54D33E, 0x3CD284,
+         0x3EC7CC, 0x4B4B4B, 0x000000, 0x000000,
+         0xFFFFFF, 0xBDE2FF, 0xCECFFF, 0xE6C2FF,
+         0xF6BCFF, 0xF9C2ED, 0xFACFC6, 0xF8DEAC,
+         0xEEE9A1, 0xD0F59F, 0xBBF5AF, 0xB3F5CD,
+         0xB9EDF0, 0xB9B9B9, 0x000000, 0x000000 }
+   },
+   { "smooth-v2-fbx", "FBX's Smooth V2 palette",
+      { 0x6A6A6A, 0x00148F, 0x1E029B, 0x3F008A,
+         0x600060, 0x660017, 0x570D00, 0x3C1F00,
+         0x1B3300, 0x004200, 0x004500, 0x003C1F,
+         0x00315C, 0x000000, 0x000000, 0x000000,
+         0xB9B9B9, 0x0F4BD4, 0x412DEB, 0x6C1DD9,
+         0x9C17AB, 0xA71A4D, 0x993200, 0x7C4A00,
+         0x546400, 0x1A7800, 0x007F00, 0x00763E,
+         0x00678F, 0x010101, 0x000000, 0x000000,
+         0xFFFFFF, 0x68A6FF, 0x8C9CFF, 0xB586FF,
+         0xD975FD, 0xE377B9, 0xE58D68, 0xD49D29,
+         0xB3AF0C, 0x7BC211, 0x55CA47, 0x46CB81,
+         0x47C1C5, 0x4A4A4A, 0x000000, 0x000000,
+         0xFFFFFF, 0xCCEAFF, 0xDDDEFF, 0xECDAFF,
+         0xF8D7FE, 0xFCD6F5, 0xFDDBCF, 0xF9E7B5,
+         0xF1F0AA, 0xDAFAA9, 0xC9FFBC, 0xC3FBD7,
+         0xC4F6F6, 0xBEBEBE, 0x000000, 0x000000 }
+   },
+   { "nes-classic-fbx", "FBX's NES Classic palette",
+      { 0x616161, 0x000088, 0x1F0D99, 0x371379,
+         0x561260, 0x5D0010, 0x520E00, 0x3A2308,
+         0x21350C, 0x0D410E, 0x174417, 0x003A1F,
+         0x002F57, 0x000000, 0x000000, 0x000000,
+         0xAAAAAA, 0x0D4DC4, 0x4B24DE, 0x6912CF,
+         0x9014AD, 0x9D1C48, 0x923404, 0x735005,
+         0x5D6913, 0x167A11, 0x138008, 0x127649,
+         0x1C6691, 0x000000, 0x000000, 0x000000,
+         0xFCFCFC, 0x639AFC, 0x8A7EFC, 0xB06AFC,
+         0xDD6DF2, 0xE771AB, 0xE38658, 0xCC9E22,
+         0xA8B100, 0x72C100, 0x5ACD4E, 0x34C28E,
+         0x4FBECE, 0x424242, 0x000000, 0x000000,
+         0xFCFCFC, 0xBED4FC, 0xCACAFC, 0xD9C4FC,
+         0xECC1FC, 0xFAC3E7, 0xF7CEC3, 0xE2CDA7,
+         0xDADB9C, 0xC8E39E, 0xBFE5B8, 0xB2EBC8,
+         0xB7E5EB, 0xACACAC, 0x000000, 0x000000 }
    }
 };
 
@@ -808,6 +897,181 @@ static void palette_switch_set_index(uint32_t palette_index)
  * Palette switching END
  * ======================================== */
 
+/* ========================================
+ * Stereo Filter START
+ * ======================================== */
+
+enum stereo_filter_type
+{
+   STEREO_FILTER_NULL = 0,
+   STEREO_FILTER_DELAY
+};
+static enum stereo_filter_type current_stereo_filter = STEREO_FILTER_NULL;
+
+#define STEREO_FILTER_DELAY_MS_DEFAULT 15.0f;
+typedef struct
+{
+   int32_t *samples;
+   size_t samples_size;
+   size_t samples_pos;
+   size_t delay_count;
+} stereo_filter_delay_t;
+static stereo_filter_delay_t stereo_filter_delay;
+static float stereo_filter_delay_ms = STEREO_FILTER_DELAY_MS_DEFAULT;
+
+static void stereo_filter_apply_null(int32_t *sound_buffer, size_t size)
+{
+   size_t i;
+   /* Each element of sound_buffer is a 16 bit mono sample
+    * stored in a 32 bit value. We convert this to stereo
+    * by copying the mono sample to both the high and low
+    * 16 bit regions of the value and casting sound_buffer
+    * to int16_t when uploading to the frontend */
+   for (i = 0; i < size; i++)
+      sound_buffer[i] = (sound_buffer[i] << 16) |
+            (sound_buffer[i] & 0xFFFF);
+}
+
+static void stereo_filter_apply_delay(int32_t *sound_buffer, size_t size)
+{
+   size_t delay_capacity = stereo_filter_delay.samples_size -
+         stereo_filter_delay.samples_pos;
+   size_t i;
+
+   /* Copy current samples into the delay buffer
+    * (resizing if required) */
+   if (delay_capacity < size)
+   {
+      int32_t *tmp_buffer = NULL;
+      size_t tmp_buffer_size;
+
+      tmp_buffer_size = stereo_filter_delay.samples_size + (size - delay_capacity);
+      tmp_buffer_size = (tmp_buffer_size << 1) - (tmp_buffer_size >> 1);
+      tmp_buffer      = (int32_t *)malloc(tmp_buffer_size * sizeof(int32_t));
+
+      memcpy(tmp_buffer, stereo_filter_delay.samples,
+            stereo_filter_delay.samples_pos * sizeof(int32_t));
+
+      free(stereo_filter_delay.samples);
+
+      stereo_filter_delay.samples      = tmp_buffer;
+      stereo_filter_delay.samples_size = tmp_buffer_size;
+   }
+
+   for (i = 0; i < size; i++)
+      stereo_filter_delay.samples[i +
+            stereo_filter_delay.samples_pos] = sound_buffer[i];
+
+   stereo_filter_delay.samples_pos += size;
+
+   /* If we have enough samples in the delay
+    * buffer, mix them into the output */
+   if (stereo_filter_delay.samples_pos >
+         stereo_filter_delay.delay_count)
+   {
+      size_t delay_index    = 0;
+      size_t samples_to_mix = stereo_filter_delay.samples_pos -
+            stereo_filter_delay.delay_count;
+      samples_to_mix        = (samples_to_mix > size) ?
+            size : samples_to_mix;
+
+      /* Perform 'null' filtering for any samples for
+       * which a delay buffer entry is unavailable */
+      if (size > samples_to_mix)
+         for (i = 0; i < size - samples_to_mix; i++)
+            sound_buffer[i] = (sound_buffer[i] << 16) |
+                  (sound_buffer[i] & 0xFFFF);
+
+      /* Each element of sound_buffer is a 16 bit mono sample
+       * stored in a 32 bit value. We convert this to stereo
+       * by copying the mono sample to the high (left channel)
+       * 16 bit region and the delayed sample to the low
+       * (right channel) region, casting sound_buffer
+       * to int16_t when uploading to the frontend */
+      for (i = size - samples_to_mix; i < size; i++)
+         sound_buffer[i] = (sound_buffer[i] << 16) |
+               (stereo_filter_delay.samples[delay_index++] & 0xFFFF);
+
+      /* Remove the mixed samples from the delay buffer */
+      memmove(stereo_filter_delay.samples,
+            stereo_filter_delay.samples + samples_to_mix,
+            (stereo_filter_delay.samples_pos - samples_to_mix) *
+                  sizeof(int32_t));
+      stereo_filter_delay.samples_pos -= samples_to_mix;
+   }
+   /* Otherwise apply the regular 'null' filter */
+   else
+      for (i = 0; i < size; i++)
+            sound_buffer[i] = (sound_buffer[i] << 16) |
+                  (sound_buffer[i] & 0xFFFF);
+}
+
+static void (*stereo_filter_apply)(int32_t *sound_buffer, size_t size) = stereo_filter_apply_null;
+
+static void stereo_filter_deinit_delay(void)
+{
+   if (stereo_filter_delay.samples)
+      free(stereo_filter_delay.samples);
+
+   stereo_filter_delay.samples      = NULL;
+   stereo_filter_delay.samples_size = 0;
+   stereo_filter_delay.samples_pos  = 0;
+   stereo_filter_delay.delay_count  = 0;
+}
+
+static void stereo_filter_init_delay(void)
+{
+   size_t initial_samples_size;
+
+   /* Convert delay (ms) to number of samples */
+   stereo_filter_delay.delay_count = (size_t)(
+         (stereo_filter_delay_ms / 1000.0f) *
+               (float)sndsamplerate);
+
+   /* Preallocate delay_count + worst case expected
+    * samples per frame to minimise reallocation of
+    * the samples buffer during runtime */
+   initial_samples_size = stereo_filter_delay.delay_count +
+         (size_t)((float)sndsamplerate / NES_PAL_FPS) + 1;
+
+   stereo_filter_delay.samples      = (int32_t *)malloc(
+         initial_samples_size * sizeof(int32_t));
+   stereo_filter_delay.samples_size = initial_samples_size;
+   stereo_filter_delay.samples_pos  = 0;
+
+   /* Assign function pointer */
+   stereo_filter_apply = stereo_filter_apply_delay;
+}
+
+static void stereo_filter_deinit(void)
+{
+   /* Clean up */
+   stereo_filter_deinit_delay();
+   /* Assign default function pointer */
+   stereo_filter_apply = stereo_filter_apply_null;
+}
+
+static void stereo_filter_init(void)
+{
+   stereo_filter_deinit();
+
+   /* Use a case statement to simplify matters
+    * if more filter types are added in the
+    * future... */
+   switch (current_stereo_filter)
+   {
+      case STEREO_FILTER_DELAY:
+         stereo_filter_init_delay();
+         break;
+      default:
+         break;
+   }
+}
+
+/* ========================================
+ * Stereo Filter END
+ * ======================================== */
+
 #ifdef HAVE_NTSC_FILTER
 /* ntsc */
 #include "nes_ntsc.h"
@@ -936,6 +1200,16 @@ static void update_nes_controllers(unsigned port, unsigned device)
          FCEUI_SetInput(port, SI_ARKANOID, nes_input.MouseData[port], 0);
          FCEU_printf(" Player %u: Arkanoid\n", port + 1);
          break;
+      case RETRO_DEVICE_POWERPADA:
+         nes_input.type[port] = RETRO_DEVICE_POWERPADA;
+         FCEUI_SetInput(port, SI_POWERPADA, &nes_input.PowerPadData, 0);
+         FCEU_printf(" Player %u: Power Pad\n", port + 1);
+         break;
+      case RETRO_DEVICE_POWERPADB:
+         nes_input.type[port] = RETRO_DEVICE_POWERPADB;
+         FCEUI_SetInput(port, SI_POWERPADB, &nes_input.PowerPadData, 0);
+         FCEU_printf(" Player %u: Power Pad\n", port + 1);
+         break;
       case RETRO_DEVICE_GAMEPAD:
       default:
          nes_input.type[port] = RETRO_DEVICE_GAMEPAD;
@@ -991,6 +1265,8 @@ static unsigned nes_to_libretro(int d)
       return RETRO_DEVICE_ZAPPER;
    case SI_ARKANOID:
       return RETRO_DEVICE_ARKANOID;
+   case SI_POWERPADB:
+      return RETRO_DEVICE_POWERPADB;
    }
 
    return (RETRO_DEVICE_GAMEPAD);
@@ -1075,7 +1351,6 @@ static bool update_option_visibility(void)
 {
    struct retro_variable var = {0};
    bool updated              = false;
-   size_t i, size;
 
    /* If frontend supports core option categories,
     * then fceumm_show_adv_system_options and
@@ -1140,6 +1415,8 @@ static bool update_option_visibility(void)
          char options_list[][25] = {
             "fceumm_sndvolume",
             "fceumm_sndquality",
+            "fceumm_sndlowpass",
+            "fceumm_sndstereodelay",
             "fceumm_swapduty",
             "fceumm_apu_1",
             "fceumm_apu_2",
@@ -1167,7 +1444,7 @@ static bool update_option_visibility(void)
 static void set_variables(void)
 {
    struct retro_core_option_display option_display;
-   unsigned i = 0, index = 0;
+   unsigned index = 0;
 
    option_display.visible = false;
 
@@ -1283,12 +1560,16 @@ void retro_set_environment(retro_environment_t cb)
       { "Gamepad",  RETRO_DEVICE_GAMEPAD },
       { "Arkanoid", RETRO_DEVICE_ARKANOID },
       { "Zapper",   RETRO_DEVICE_ZAPPER },
+      { "Power Pad A",   RETRO_DEVICE_POWERPADA },
+      { "Power Pad B",   RETRO_DEVICE_POWERPADB },
       { 0, 0 },
    };
 
    static const struct retro_controller_description pads3[] = {
       { "Auto",     RETRO_DEVICE_AUTO },
       { "Gamepad",  RETRO_DEVICE_GAMEPAD },
+      { "Power Pad A",   RETRO_DEVICE_POWERPADA },
+      { "Power Pad B",   RETRO_DEVICE_POWERPADB },
       { 0, 0 },
    };
 
@@ -1310,8 +1591,8 @@ void retro_set_environment(retro_environment_t cb)
 
    static const struct retro_controller_info ports[] = {
       { pads1, 3 },
-      { pads2, 4 },
-      { pads3, 2 },
+      { pads2, 6 },
+      { pads3, 4 },
       { pads4, 2 },
       { pads5, 6 },
       { 0, 0 },
@@ -1364,13 +1645,8 @@ static float get_aspect_ratio(unsigned width, unsigned height)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-#ifdef PSP
-   unsigned width  = NES_WIDTH  - (crop_overscan ? 16 : 0);
-   unsigned height = NES_HEIGHT - (crop_overscan ? 16 : 0);
-#else
-   unsigned width  = NES_WIDTH  - (crop_overscan_h ? 16 : 0);
-   unsigned height = NES_HEIGHT - (crop_overscan_v ? 16 : 0);
-#endif
+   unsigned width  = NES_WIDTH  - crop_overscan_h_left - crop_overscan_h_right;
+   unsigned height = NES_HEIGHT - crop_overscan_v_top - crop_overscan_v_bottom;
 #ifdef HAVE_NTSC_FILTER
    info->geometry.base_width = (use_ntsc ? NES_NTSC_OUT_WIDTH(width) : width);
    info->geometry.max_width = (use_ntsc ? NES_NTSC_WIDTH : NES_WIDTH);
@@ -1519,6 +1795,7 @@ void retro_deinit (void)
    NTSCFilter_Cleanup();
 #endif
    palette_switch_deinit();
+   stereo_filter_deinit();
 }
 
 void retro_reset(void)
@@ -1540,6 +1817,7 @@ static void check_variables(bool startup)
    struct retro_variable var = {0};
    char key[256];
    int i, enable_apu;
+   bool stereo_filter_updated = false;
 
    /* 1 = Performs only geometry update: e.g. overscans */
    /* 2 = Performs video/geometry update when needed and timing changes: e.g. region and filter change */
@@ -1625,12 +1903,20 @@ static void check_variables(bool startup)
          current_palette = 14;
       else if (!strcmp(var.value, "wavebeam"))
          current_palette = 15;
+      else if (!strcmp(var.value, "digital-prime-fbx"))
+         current_palette = 16;
+      else if (!strcmp(var.value, "magnum-fbx"))
+         current_palette = 17;
+      else if (!strcmp(var.value, "smooth-v2-fbx"))
+         current_palette = 18;
+      else if (!strcmp(var.value, "nes-classic-fbx"))
+         current_palette = 19;
 
       if (current_palette != orig_value)
       {
          audio_video_updated = 1;
          ResetPalette();
-      }  
+      }
    }
 
    var.key = "fceumm_up_down_allowed";
@@ -1694,9 +1980,40 @@ static void check_variables(bool startup)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      if (!strcmp(var.value, "mouse")) zappermode = RetroMouse;
-      else if (!strcmp(var.value, "touchscreen")) zappermode = RetroPointer;
-      else zappermode = RetroLightgun; /*default setting*/
+      if (!strcmp(var.value, "mouse")) {
+         zappermode = RetroMouse;
+         switchZapper = 0;
+      }
+      else if (!strcmp(var.value, "touchscreen")) {
+         zappermode = RetroPointer;
+         switchZapper = 0;
+      }
+      else if (!strcmp(var.value, "stlightgun")) {
+         zappermode = RetroSTLightgun;
+         switchZapper = 1;
+      }
+      else {
+         zappermode = RetroCLightgun; /*default setting*/
+         switchZapper = 0;
+      }
+   }
+
+   var.key = "fceumm_arkanoid_mode";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (!strcmp(var.value, "touchscreen")) {
+         arkanoidmode = RetroArkanoidPointer;
+      }
+      else if (!strcmp(var.value, "abs_mouse")) {
+         arkanoidmode = RetroArkanoidAbsMouse;
+      }
+      else if (!strcmp(var.value, "stelladaptor")) {
+         arkanoidmode = RetroArkanoidStelladaptor;
+      }
+      else {
+         arkanoidmode = RetroArkanoidMouse; /*default setting*/
+      }
    }
 
    var.key = "fceumm_zapper_tolerance";
@@ -1704,6 +2021,13 @@ static void check_variables(bool startup)
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
       FCEU_ZapperSetTolerance(atoi(var.value));
+   }
+
+   var.key = "fceumm_mouse_sensitivity";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      mouseSensitivity = atoi(var.value);
    }
 
    var.key = "fceumm_show_crosshair";
@@ -1714,6 +2038,22 @@ static void check_variables(bool startup)
       else if (!strcmp(var.value, "disabled")) show_crosshair = 0;
    }
 
+   var.key = "fceumm_zapper_trigger";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (!strcmp(var.value, "enabled")) zapper_trigger_invert_option = 1;
+      else if (!strcmp(var.value, "disabled")) zapper_trigger_invert_option = 0;
+   }
+
+   var.key = "fceumm_zapper_sensor";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      if (!strcmp(var.value, "enabled")) zapper_sensor_invert_option = 1;
+      else if (!strcmp(var.value, "disabled")) zapper_sensor_invert_option = 0;
+   }
+
 #ifdef PSP
    var.key = "fceumm_overscan";
 
@@ -1722,31 +2062,60 @@ static void check_variables(bool startup)
       bool newval = (!strcmp(var.value, "enabled"));
       if (newval != crop_overscan)
       {
+         crop_overscan_h_left = (newval == true ? 8 : 0);
+         crop_overscan_h_right = (newval == true ? 8 : 0);
+         crop_overscan_v_top = (newval == true ? 8 : 0);
+         crop_overscan_v_bottom = (newval == true ? 8 : 0);
+
          crop_overscan = newval;
          audio_video_updated = 1;
       }
    }
 #else
-   var.key = "fceumm_overscan_h";
+   var.key = "fceumm_overscan_h_left";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      bool newval = (!strcmp(var.value, "enabled"));
-      if (newval != crop_overscan_h)
+      int newval = atoi(var.value);
+      if (newval != crop_overscan_h_left)
       {
-         crop_overscan_h = newval;
+         crop_overscan_h_left = newval;
          audio_video_updated = 1;
       }
    }
 
-   var.key = "fceumm_overscan_v";
+   var.key = "fceumm_overscan_h_right";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
    {
-      bool newval = (!strcmp(var.value, "enabled"));
-      if (newval != crop_overscan_v)
+      int newval = atoi(var.value);
+      if (newval != crop_overscan_h_right)
       {
-         crop_overscan_v = newval;
+         crop_overscan_h_right = newval;
+         audio_video_updated = 1;
+      }
+   }
+
+   var.key = "fceumm_overscan_v_top";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int newval = atoi(var.value);
+      if (newval != crop_overscan_v_top)
+      {
+         crop_overscan_v_top = newval;
+         audio_video_updated = 1;
+      }
+   }
+
+   var.key = "fceumm_overscan_v_bottom";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int newval = atoi(var.value);
+      if (newval != crop_overscan_v_bottom)
+      {
+         crop_overscan_v_bottom = newval;
          audio_video_updated = 1;
       }
    }
@@ -1826,6 +2195,53 @@ static void check_variables(bool startup)
          FCEUI_SetSoundQuality(sndquality);
    }
 
+   var.key = "fceumm_sndlowpass";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      int lowpass = (!strcmp(var.value, "enabled")) ? 1 : 0;
+      FCEUI_SetLowPass(lowpass);
+   }
+
+   var.key = "fceumm_sndstereodelay";
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+   {
+      enum stereo_filter_type filter_type = STEREO_FILTER_NULL;
+      float filter_delay_ms               = STEREO_FILTER_DELAY_MS_DEFAULT;
+
+      if (strcmp(var.value, "disabled") &&
+          (strlen(var.value) > 1))
+      {
+         char value_str[3];
+
+         value_str[0] = var.value[0];
+         value_str[1] = var.value[1];
+         value_str[2] = '\0';
+
+         filter_type     = STEREO_FILTER_DELAY;
+         filter_delay_ms = (float)atoi(var.value);
+
+         filter_delay_ms = (filter_delay_ms < 1.0f) ?
+               1.0f : filter_delay_ms;
+         filter_delay_ms = (filter_delay_ms > 32.0f) ?
+               32.0f : filter_delay_ms;
+      }
+
+      if ((filter_type != current_stereo_filter) ||
+          ((filter_type == STEREO_FILTER_DELAY) &&
+               (filter_delay_ms != stereo_filter_delay_ms)))
+      {
+         current_stereo_filter  = filter_type;
+         stereo_filter_delay_ms = filter_delay_ms;
+         stereo_filter_updated  = true;
+      }
+   }
+
+   if ((stereo_filter_updated ||
+         (audio_video_updated == 2)) && !startup)
+      stereo_filter_init();
+
    var.key = "fceumm_sndvolume";
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
@@ -1839,7 +2255,7 @@ static void check_variables(bool startup)
    {
       struct retro_system_av_info av_info;
       retro_get_system_av_info(&av_info);
-      if (audio_video_updated == 2)  
+      if (audio_video_updated == 2)
          environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
       else
          environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &av_info);
@@ -1875,75 +2291,142 @@ static void check_variables(bool startup)
    update_option_visibility();
 }
 
+void add_powerpad_input(unsigned port, uint32 variant, uint32_t *ppdata) 
+{
+   unsigned k;
+   const uint32_t* map = powerpadmap;
+   for (k = 0 ; k < 12 ; k++)
+   	if (input_cb(0, RETRO_DEVICE_KEYBOARD, 0, map[k]))
+            *ppdata |= (1 << k);
+}
+
 static int mzx = 0, mzy = 0;
 
-void get_mouse_input(unsigned port, uint32_t *zapdata)
+void get_mouse_input(unsigned port, uint32 variant, uint32_t *mousedata)
 {
-   bool adjx = false;
-   bool adjy = false;
    int min_width, min_height, max_width, max_height;
 
-#ifdef PSP
-   adjx = adjy = crop_overscan ? 1 : 0;
-#else
-   adjx        = crop_overscan_h ? 1 : 0;
-   adjy        = crop_overscan_v ? 1 : 0;
-#endif
    max_width   = 256;
    max_height  = 240;
-   zapdata[2]  = 0; /* reset click state */
+   mousedata[2]  = 0; /* reset click state */
+   
+   if (variant == RETRO_DEVICE_FC_ARKANOID)
+       variant = RETRO_DEVICE_ARKANOID;
 
-   if (zappermode == RetroMouse) /* mouse device */
+   if ((variant != RETRO_DEVICE_ARKANOID && zappermode == RetroMouse) || 
+       (variant == RETRO_DEVICE_ARKANOID && arkanoidmode == RetroArkanoidMouse)) /* mouse device */
    {
-      min_width   = (adjx ? 8 : 0) + 1;
-      min_height  = (adjy ? 8 : 0) + 1;
-      max_width  -= (adjx ? 8 : 0);
-      max_height -= (adjy ? 8 : 0);
+      int mouse_Lbutton;
+      int mouse_Rbutton;
 
-      /* TODO: Add some sort of mouse sensitivity */
-      mzx += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X);
-      mzy += input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y);
+      min_width   = crop_overscan_h_left + 1;
+      min_height  = crop_overscan_v_top + 1;
+      max_width  -= crop_overscan_h_right;
+      max_height -= crop_overscan_v_bottom;
 
+      mzx += mouseSensitivity * input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_X) / 100;
+      mzy += mouseSensitivity * input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_Y) / 100;      
+
+      switch(variant) {
+        case RETRO_DEVICE_ARKANOID:
+            if (mzx < 0) mzx = 0;
+            else if (mzx > 240) mzx = 240;
+            if (mzy < min_height) mzy = min_height;
+            else if (mzy > max_height) mzy = max_height;
+            mousedata[1] = mzy;
+            break; 
+
+        case RETRO_DEVICE_ZAPPER:
+        default:
       /* Set crosshair within the limits of current screen resolution */
       if (mzx < min_width) mzx = min_width;
       else if (mzx > max_width) mzx = max_width;
+            break;
+      }
 
-      if (mzy < min_height) mzy = min_height;
-      else if (mzy > max_height) mzy = max_height;
+      mousedata[0] = mzx;
+      
+      mouse_Lbutton = input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT);
+      mouse_Rbutton = input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT);
 
-      zapdata[0] = mzx;
-      zapdata[1] = mzy;
-
-      if (input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_LEFT))
-         zapdata[2] |= 0x1;
-      if (input_cb(port, RETRO_DEVICE_MOUSE, 0, RETRO_DEVICE_ID_MOUSE_RIGHT))
-         zapdata[2] |= 0x2;
+      if (mouse_Lbutton)
+         mousedata[2] |= 0x1;
+      if (mouse_Rbutton)
+         mousedata[2] |= 0x2;
    }
-   else if (zappermode == RetroPointer) {
-      int offset_x = (adjx ? 0X8FF : 0);
-      int offset_y = (adjy ? 0X999 : 0);
+   else if (variant != RETRO_DEVICE_ARKANOID && zappermode == RetroPointer) {
+      int offset_x = (crop_overscan_h_left * 0x120) - 1;
+      int offset_y = (crop_overscan_v_top * 0x133) + 1;
 
       int _x = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
       int _y = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
 
       if (_x == 0 && _y == 0)
       {
-         zapdata[0] = 0;
-         zapdata[1] = 0;
+         mousedata[0] = 0;
       }
       else
       {
-         zapdata[0] = (_x + (0x7FFF + offset_x)) * max_width  / ((0x7FFF + offset_x) * 2);
-         zapdata[1] = (_y + (0x7FFF + offset_y)) * max_height  / ((0x7FFF + offset_y) * 2);
+         mousedata[0] = (_x + (0x7FFF + offset_x)) * max_width  / ((0x7FFF + offset_x) * 2);
+         mousedata[1] = (_y + (0x7FFF + offset_y)) * max_height  / ((0x7FFF + offset_y) * 2);
       }
 
       if (input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED))
-         zapdata[2] |= 0x1;
+         mousedata[2] |= 0x1;
    }
-   else /* lightgun device */
+   else if (variant == RETRO_DEVICE_ARKANOID && (arkanoidmode == RetroArkanoidAbsMouse || arkanoidmode == RetroArkanoidPointer)) {
+      int offset_x = (crop_overscan_h_left * 0x120) - 1;
+
+      int _x = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_X);
+      int _y = input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_Y);
+
+      if (_x != 0 || _y != 0)
+      {
+         int32 raw = (_x + (0x7FFF + offset_x)) * max_width  / ((0x7FFF + offset_x) * 2);
+         if (arkanoidmode == RetroArkanoidAbsMouse) {
+             /* remap so full screen movement ends up within the encoder range 0-240
+                game board: 176 wide
+                paddle: 32
+                range of movement: 176-32 = 144
+                left edge: 16
+                right edge: 64
+             
+                increase movement by 10 to allow edges to be reached in case of problems
+	     */
+             raw = (raw - 128) * 140 / 128 + 128;
+             if (raw < 0)
+                 raw = 0;
+             else if (raw > 255)
+                 raw = 255;
+              
+             mousedata[0] = raw * 240 / 255;
+         }
+         else {
+             /* remap so full board movement ends up within the encoder range 0-240 */
+             if (mousedata[0] < 16+(32/2))
+                 mousedata[0] = 0;
+             else
+                 mousedata[0] -= 16+(32/2);
+             if (mousedata[0] > 144)
+                 mousedata[0] = 144;
+             mousedata[0] = raw * 240 / 144;
+         }
+      }
+      
+
+      if (input_cb(port, RETRO_DEVICE_POINTER, 0, RETRO_DEVICE_ID_POINTER_PRESSED))
+         mousedata[2] |= 0x1;
+   }
+   else if (variant == RETRO_DEVICE_ARKANOID && arkanoidmode == RetroArkanoidStelladaptor) {
+      int x = input_cb(port, RETRO_DEVICE_ANALOG, 0, RETRO_DEVICE_ID_ANALOG_X);
+      mousedata[0] = (x+32768)*240/65535;
+      if (input_cb(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A) || input_cb(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B))
+         mousedata[2] |= 0x1;
+   }
+   else  if (zappermode == RetroCLightgun) /* Crosshair lightgun device */
    {
-      int offset_x = (adjx ? 0X8FF : 0);
-      int offset_y = (adjy ? 0X999 : 0);
+      int offset_x = (crop_overscan_h_left * 0x120) - 1;
+      int offset_y = (crop_overscan_v_top * 0x133) + 1;
       int offscreen;
       int offscreen_shot;
       int trigger;
@@ -1954,20 +2437,25 @@ void get_mouse_input(unsigned port, uint32_t *zapdata)
 
       if ( offscreen || offscreen_shot )
       {
-         zapdata[0] = 0;
-         zapdata[1] = 0;
+         mousedata[0] = 0;
+         mousedata[1] = 0;
       }
       else
       {
-         int _x = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X);
-         int _y = input_cb(port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y);
+         int _x = input_cb( port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_X );
+         int _y = input_cb( port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y );
 
-         zapdata[0] = (_x + (0x7FFF + offset_x)) * max_width  / ((0x7FFF + offset_x) * 2);
-         zapdata[1] = (_y + (0x7FFF + offset_y)) * max_height  / ((0x7FFF + offset_y) * 2);
+         mousedata[0] = (_x + (0x7FFF + offset_x)) * max_width  / ((0x7FFF + offset_x) * 2);
+         mousedata[1] = (_y + (0x7FFF + offset_y)) * max_height  / ((0x7FFF + offset_y) * 2);
       }
 
       if ( trigger || offscreen_shot )
-         zapdata[2] |= 0x1;
+         mousedata[2] |= 0x1;
+   }
+   else /* Sequential targets lightgun device integration */
+   {
+      mousedata[2] = input_cb( port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_TRIGGER );
+      mousedata[3] = input_cb( port, RETRO_DEVICE_LIGHTGUN, 0, RETRO_DEVICE_ID_LIGHTGUN_AUX_A );
    }
 }
 
@@ -2114,8 +2602,21 @@ static void FCEUD_UpdateInput(void)
       switch (nes_input.type[port])
       {
          case RETRO_DEVICE_ARKANOID:
+         case RETRO_DEVICE_FC_ARKANOID:
          case RETRO_DEVICE_ZAPPER:
-            get_mouse_input(port, nes_input.MouseData[port]);
+               get_mouse_input(port, nes_input.type[port], nes_input.MouseData[port]);
+            break;
+      }
+   }
+
+   nes_input.PowerPadData = 0;
+   for (port = 0; port < MAX_PORTS; port++)
+   {
+      switch (nes_input.type[port])
+      {
+         case RETRO_DEVICE_POWERPADB:
+         case RETRO_DEVICE_POWERPADA:
+            add_powerpad_input(port, nes_input.type[port], &nes_input.PowerPadData);
             break;
       }
    }
@@ -2126,7 +2627,7 @@ static void FCEUD_UpdateInput(void)
       case RETRO_DEVICE_FC_ARKANOID:
       case RETRO_DEVICE_FC_OEKAKIDS:
       case RETRO_DEVICE_FC_SHADOW:
-         get_mouse_input(0, nes_input.FamicomData);
+         get_mouse_input(0, nes_input.type[4], nes_input.FamicomData);
          break;
       case RETRO_DEVICE_FC_HYPERSHOT:
       {
@@ -2137,7 +2638,7 @@ static void FCEUD_UpdateInput(void)
          toggle ^= 1;
          for (i = 0; i < 2; i++)
          {
-            
+
             if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B))
                nes_input.FamicomData[0] |= 0x02 << (i * 2);
             else if (input_cb(i, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_Y))
@@ -2281,10 +2782,10 @@ static void retro_run_blit(uint8_t *gfx)
       ps2->coreTexture->PSM = GS_PSM_T8;
       ps2->coreTexture->ClutPSM = GS_PSM_CT16;
       ps2->coreTexture->Filter = GS_FILTER_LINEAR;
-      ps2->padding = (struct retro_hw_ps2_insets){ crop_overscan_v ? 8.0f : 0.0f,
-                                                   crop_overscan_h ? 8.0f : 0.0f,
-                                                   crop_overscan_v ? 8.0f : 0.0f,
-                                                   crop_overscan_h ? 8.0f : 0.0f};
+      ps2->padding = (struct retro_hw_ps2_insets){ (float) crop_overscan_v_top,
+                                                   (float) crop_overscan_h_left,
+                                                   (float) crop_overscan_v_bottom,
+                                                   (float) crop_overscan_h_right };
    }
 
    ps2->coreTexture->Clut = (u32*)retro_palette;
@@ -2303,14 +2804,14 @@ static void retro_run_blit(uint8_t *gfx)
           NES_WIDTH, burst_phase, NES_WIDTH, NES_HEIGHT,
           ntsc_video_out, NES_NTSC_WIDTH * sizeof(uint16));
 
-      width    = NES_WIDTH - (crop_overscan_h ? 16 : 0);
+      width    = NES_WIDTH - crop_overscan_h_left - crop_overscan_h_right;
       width    = NES_NTSC_OUT_WIDTH(width);
-      height   = NES_HEIGHT - (crop_overscan_v ? 16 : 0);
+      height   = NES_HEIGHT - crop_overscan_v_top - crop_overscan_v_bottom;
       pitch    = width * sizeof(uint16_t);
 
       {
-         int32_t h_offset   = crop_overscan_h ?  NES_NTSC_OUT_WIDTH(8) : 0;
-         int32_t v_offset   = crop_overscan_v ? 8 : 0;
+         int32_t h_offset   = (crop_overscan_h_left ? NES_NTSC_OUT_WIDTH(crop_overscan_h_left) : 0);
+         int32_t v_offset   = crop_overscan_v_top;
          const uint16_t *in = ntsc_video_out + h_offset + NES_NTSC_WIDTH * v_offset;
          uint16_t *out      = fceu_video_out;
 
@@ -2326,11 +2827,11 @@ static void retro_run_blit(uint8_t *gfx)
    else
 #endif /* HAVE_NTSC_FILTER */
    {
-      incr   += (crop_overscan_h ? 16 : 0);
-      width  -= (crop_overscan_h ? 16 : 0);
-      height -= (crop_overscan_v ? 16 : 0);
-      pitch  -= (crop_overscan_h ? 32 : 0);
-      gfx    += (crop_overscan_v ? ((crop_overscan_h ? 8 : 0) + 256 * 8) : (crop_overscan_h ? 8 : 0));
+      incr   += (crop_overscan_h_left + crop_overscan_h_right);
+      width  -= (crop_overscan_h_left + crop_overscan_h_right);
+      height -= (crop_overscan_v_top + crop_overscan_v_bottom);
+      pitch  -= (crop_overscan_h_left + crop_overscan_h_right) * sizeof(uint16_t);
+      gfx    += (crop_overscan_v_top * 256) + crop_overscan_h_left;
 
       if (use_raw_palette)
       {
@@ -2353,8 +2854,8 @@ static void retro_run_blit(uint8_t *gfx)
 void retro_run(void)
 {
    uint8_t *gfx;
-   int32_t i, ssize = 0;
-   bool updated = false;
+   int32_t ssize = 0;
+   bool updated  = false;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
       check_variables(false);
@@ -2365,9 +2866,8 @@ void retro_run(void)
 #else
    FCEUI_Emulate(&gfx, &sound, &ssize, 0);
 #endif
-   for (i = 0; i < ssize; i++)
-      sound[i] = (sound[i] << 16) | (sound[i] & 0xffff);
 
+   stereo_filter_apply(sound, ssize);
    audio_batch_cb((const int16_t*)sound, ssize);
 #ifdef PORTANDROID
    if(!cb_context.video_skip)
@@ -2436,7 +2936,7 @@ static int GGisvalid(const char *code)
 {
    size_t len = strlen(code);
    uint32 i;
-   
+
    if (len != 6 && len != 8)
       return 0;
 
@@ -2470,7 +2970,8 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code)
 
    while (codepart)
    {
-      if ((strlen(codepart) == 7) && (codepart[4]==':'))
+      size_t codepart_len = strlen(codepart);
+      if ((codepart_len == 7) && (codepart[4]==':'))
       {
          /* raw code in xxxx:xx format */
          log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (Raw)\n", codepart);
@@ -2483,7 +2984,7 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code)
          if (a < 0x0100) type = 0;
          FCEUI_AddCheat(name, a, v, c, type);
       }
-      else if ((strlen(codepart) == 10) && (codepart[4] == '?') && (codepart[7] == ':'))
+      else if ((codepart_len == 10) && (codepart[4] == '?') && (codepart[7] == ':'))
       {
          /* raw code in xxxx?xx:xx */
          log_cb.log(RETRO_LOG_DEBUG, "Cheat code added: '%s' (Raw)\n", codepart);
@@ -3039,6 +3540,7 @@ bool retro_load_game(const struct retro_game_info *info)
    ResetPalette();
    FCEUD_SoundToggle();
    check_variables(true);
+   stereo_filter_init();
    PowerNES();
 
    FCEUI_DisableFourScore(1);

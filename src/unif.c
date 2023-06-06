@@ -565,7 +565,7 @@ static BMAPPING bmap[] = {
 	{ "YOKO",                       264, UNLYOKO_Init,          0 },
 	{ "COOLBOY",                    268, COOLBOY_Init,          BMCFLAG_256KCHRR },
 	{ "MINDKIDS",                   268, MINDKIDS_Init,         BMCFLAG_256KCHRR },
-	{ "158B",                       258, UNL158B_Init,          0 },
+	{ "158B",                       258, UNL8237_Init,          0 },
 	{ "DRAGONFIGHTER",              292, UNLBMW8544_Init,       0 },
 	{ "EH8813A",                    519, UNLEH8813A_Init,       0 },
 	{ "HP898F",                     319, BMCHP898F_Init,        0 },
@@ -621,11 +621,7 @@ static BMAPPING bmap[] = {
 	{ "BS-400R",                    422, Mapper422_Init,        0 },
 	{ "BS-4040R",                   422, Mapper422_Init,        0 },
 	{ "22026",                      271, Mapper271_Init,        0 },
-
-#ifdef COPYFAMI
-	{ "COPYFAMI_MMC3",          NO_INES, MapperCopyFamiMMC3_Init, 0 },
-	{ "COPYFAMI",               NO_INES, MapperCopyFami_Init,   0 },
-#endif
+	{ "COOLGIRL",                   342, COOLGIRL_Init,         BMCFLAG_256KCHRR },
 
 	{ NULL, NO_INES, NULL, 0 }
 };
@@ -847,19 +843,5 @@ int UNIFLoad(const char *name, FCEUFILE *fp) {
 
 	GameInterface = UNIFGI;
 
-	return 1;
-}
-
-int CopyFamiLoad() {
-	ResetCartMapping();
-	ResetExState(0, 0);
-
-	sboardname = (uint8_t*)"COPYFAMI";
-	if (!InitializeBoard()) {
-		Cleanup();
-		return 0;
-	}
-
-	GameInterface = UNIFGI;
 	return 1;
 }
