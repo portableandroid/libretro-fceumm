@@ -446,6 +446,7 @@ static BMAPPING bmap[] = {
 	{ "AX5705",                     530, UNLAX5705_Init,        0 },
 	{ "BB",                         108, UNLBB_Init,            0 },
 	{ "BS-110",                     444, Mapper444_Init,        0 }, /* Due to a mix-up, UNIF MAPR BMC-BS-110 is actually the NC7000M PCB and refers to NES 2.0 Mapper 444 instead. */
+	{ "831128C",                    528, Mapper528_Init,        0 },
 	{ "BS-5",                       286, BMCBS5_Init,           0 },
 	{ "CC-21",                       27, UNLCC21_Init,          0 },
 	{ "CITYFIGHT",                  266, UNLCITYFIGHT_Init,     0 },
@@ -539,7 +540,7 @@ static BMAPPING bmap[] = {
 	{ "Supervision16in1",            53, Supervision16_Init,    0 },
 	{ "T-227-1",                NO_INES, BMCT2271_Init,         0 },
 	{ "T-230",                      529, UNLT230_Init,          0 },
-	{ "T-262",                      265, BMCT262_Init,          0 },
+	{ "T-262",                      265, Mapper265_Init,        0 },
 	{ "TBROM",                        4, TBROM_Init,            0 },
 	{ "TC-U01-1.5M",                147, Mapper147_Init,        0 },
 	{ "TEK90",                       90, Mapper90_Init,         0 },
@@ -565,7 +566,7 @@ static BMAPPING bmap[] = {
 	{ "YOKO",                       264, UNLYOKO_Init,          0 },
 	{ "COOLBOY",                    268, COOLBOY_Init,          BMCFLAG_256KCHRR },
 	{ "MINDKIDS",                   268, MINDKIDS_Init,         BMCFLAG_256KCHRR },
-	{ "158B",                       258, UNL158B_Init,          0 },
+	{ "158B",                       258, UNL8237_Init,          0 },
 	{ "DRAGONFIGHTER",              292, UNLBMW8544_Init,       0 },
 	{ "EH8813A",                    519, UNLEH8813A_Init,       0 },
 	{ "HP898F",                     319, BMCHP898F_Init,        0 },
@@ -621,11 +622,10 @@ static BMAPPING bmap[] = {
 	{ "BS-400R",                    422, Mapper422_Init,        0 },
 	{ "BS-4040R",                   422, Mapper422_Init,        0 },
 	{ "22026",                      271, Mapper271_Init,        0 },
-
-#ifdef COPYFAMI
-	{ "COPYFAMI_MMC3",          NO_INES, MapperCopyFamiMMC3_Init, 0 },
-	{ "COPYFAMI",               NO_INES, MapperCopyFami_Init,   0 },
-#endif
+	{ "DS-07",                      439, Mapper439_Init,        0 },
+	{ "K86B",                       439, Mapper439_Init,        0 },
+	{ "COOLGIRL",                   342, COOLGIRL_Init,         BMCFLAG_256KCHRR },
+	{ "S-2009",                     434, Mapper434_Init,        0 },
 
 	{ NULL, NO_INES, NULL, 0 }
 };
@@ -847,19 +847,5 @@ int UNIFLoad(const char *name, FCEUFILE *fp) {
 
 	GameInterface = UNIFGI;
 
-	return 1;
-}
-
-int CopyFamiLoad() {
-	ResetCartMapping();
-	ResetExState(0, 0);
-
-	sboardname = (uint8_t*)"COPYFAMI";
-	if (!InitializeBoard()) {
-		Cleanup();
-		return 0;
-	}
-
-	GameInterface = UNIFGI;
 	return 1;
 }

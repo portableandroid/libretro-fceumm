@@ -61,13 +61,11 @@ int FCEU_InitVirtualVideo(void)
       return 0;
 
    memset(XBuf, 128, 256 * (256 + extrascanlines + 8));
-   memset(XDBuf, 128, 256 * (256 + extrascanlines + 8));
+   memset(XDBuf, 0, 256 * (256 + extrascanlines + 8));
    return 1;
 }
 
 #include "drawing.h"
-
-void FCEUI_SaveSnapshot(void) { }
 
 void FCEU_PutImage(void)
 {
@@ -99,13 +97,4 @@ void FCEU_DispMessage(enum retro_log_level level, unsigned duration, const char 
    va_end(ap);
 
    FCEUD_DispMessage(level, duration, msg);
-}
-
-void FCEU_ResetMessages(void)
-{
-}
-
-int SaveSnapshot(void)
-{
-	return(0);
 }

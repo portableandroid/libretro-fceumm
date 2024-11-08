@@ -6,12 +6,10 @@ typedef struct {
 } pal;
 
 extern pal *palo;
-extern int ipalette;
+extern uint8 palette_game_available;
 void FCEU_ResetPalette(void);
 
 void FCEU_ResetPalette(void);
-void FCEU_ResetMessages();
 void FCEU_LoadGamePalette(void);
-void FCEU_DrawNTSCControlBars(uint8 *XBuf);
 
 #endif
