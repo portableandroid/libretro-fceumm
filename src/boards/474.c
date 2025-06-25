@@ -1,8 +1,7 @@
-/* FCE Ultra - NES/Famicom Emulator
+/* FCEUmm - NES/Famicom Emulator
  *
  * Copyright notice for this file:
- *  Copyright (C) 2008 CaH4e3
- *  Copyright (C) 2019 Libretro Team
+ *  Copyright (C) 2025 NewRisingSun
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,46 +17,45 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
-
-/* NES 2.0 Mapper 436: 820401/T-217 */
-
 #include "mapinc.h"
 #include "mmc3.h"
 
-static void Mapper436_PWrap(uint32 A, uint8 V) {
-	if (EXPREGS[0] &0x01)
-		setprg8(A, V &0x0F | EXPREGS[0] >>2 &0x30);
-	else
-	if (A == 0x8000)
-		setprg32(A, (EXPREGS[0] >>4));
+static void PRGWrap(uint32 A, uint8 V) {
+	if (EXPREGS[0] &0x04) {
+		setprg16(0x8000, EXPREGS[0] >>3 &0x1F | EXPREGS[0] <<5 &0x20);
+		setprg16(0xC000, EXPREGS[0] >>3 &0x1F | EXPREGS[0] <<5 &0x20);
+	} else
+		setprg32(0x8000, EXPREGS[0] >>4 &0x0F | EXPREGS[0] <<4 &0x10);
 }
 
-static void Mapper436_CWrap(uint32 A, uint8 V) {
-	setchr1(A, V &0x7F | EXPREGS[0] <<1 &~0x7F);
+static void CHRWrap(uint32 A, uint8 V) {
+	setchr1(A, V &0xFF | EXPREGS[0] <<7 &0x100);
 }
 
-static DECLFW(Mapper436_Write) {
-	EXPREGS[0] = A &0xFF;
-	FixMMC3PRG(MMC3_cmd);
-	FixMMC3CHR(MMC3_cmd);
+static DECLFW(WriteExtra) {
+	if (A &0x100) {
+		EXPREGS[0] =V;
+		FixMMC3PRG(MMC3_cmd);
+		FixMMC3CHR(MMC3_cmd);
+	}
 }
 
-static void Mapper436_Reset(void) {
-	EXPREGS[0] = 0;
+static void Reset(void) {
+	EXPREGS[0] =0;
 	MMC3RegReset();
 }
 
-static void Mapper436_Power(void) {
-	EXPREGS[0] = 0;
+static void Power(void) {
+	EXPREGS[0] =0;
 	GenMMC3Power();
-	SetWriteHandler(0x6000, 0x7FFF, Mapper436_Write);
+	SetWriteHandler(0x4100, 0x5FFF, WriteExtra);
 }
 
-void Mapper436_Init(CartInfo *info) {
-	GenMMC3_Init(info, 128, 128, 8, 0);
-	pwrap = Mapper436_PWrap;
-	cwrap = Mapper436_CWrap;
-	info->Power = Mapper436_Power;
-	info->Reset = Mapper436_Reset;
+void Mapper474_Init(CartInfo *info) {
+	GenMMC3_Init(info, 128, 256, 0, 0);
+	cwrap = CHRWrap;
+	pwrap = PRGWrap;
+	info->Power = Power;
+	info->Reset = Reset;
 	AddExState(EXPREGS, 1, 0, "EXPR");
 }

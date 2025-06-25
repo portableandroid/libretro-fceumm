@@ -27,6 +27,7 @@
 #include "sound.h"
 
 X6502 X;
+uint8 encryptOpcodes =0;
 
 #ifdef FCEUDEF_DEBUGGER
 void (*X6502_Run)(int32 cycles);
@@ -491,6 +492,8 @@ static void X6502_RunDebug(int32 cycles) {
 			X.preexec = 1;
 			b1 = RdMem(_PC);
 			_PC++;
+			if (encryptOpcodes ==12) b1 =b1 &0x39 | b1 >>1 &0x42 | b1 <<1 &0x84;
+			if (encryptOpcodes ==14) b1 =b1 &0x3F | b1 >>1 &0x40 | b1 <<1 &0x80;
 			switch (b1) {
 				#include "ops.h"
 			}
@@ -520,6 +523,8 @@ static void X6502_RunDebug(int32 cycles) {
          FCEU_SoundCPUHook(temp);
 
 		_PC++;
+		if (encryptOpcodes ==12) b1 =b1 &0x39 | b1 >>1 &0x42 | b1 <<1 &0x84;
+		if (encryptOpcodes ==14) b1 =b1 &0x3F | b1 >>1 &0x40 | b1 <<1 &0x80;
 		switch (b1) {
 			#include "ops.h"
 		}
@@ -617,6 +622,8 @@ void X6502_Run(int32 cycles)
 			FCEU_SoundCPUHook(temp);
 		X.PC = pbackus;
 		_PC++;
+		if (encryptOpcodes ==12) b1 =b1 &0x39 | b1 >>1 &0x42 | b1 <<1 &0x84;
+		if (encryptOpcodes ==14) b1 =b1 &0x3F | b1 >>1 &0x40 | b1 <<1 &0x80;
 		switch (b1) {
 			#include "ops.h"
 		}

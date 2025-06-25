@@ -26,6 +26,7 @@ static uint16 addrreg0, addrreg1;
 static uint8 *WRAM = NULL;
 static uint32 WRAMSIZE;
 static void (*WSync)(void);
+static uint8 submapper;
 
 static DECLFW(LatchWrite) {
 /*	FCEU_printf("bs %04x %02x\n",A,V); */
@@ -159,18 +160,6 @@ static void ANROMSync(void) {
 
 void ANROM_Init(CartInfo *info) {
 	Latch_Init(info, ANROMSync, 0, 0x4020, 0xFFFF, 0, 0);
-}
-
-/*------------------ Map 8 ---------------------------*/
-
-static void M8Sync(void) {
-	setprg16(0x8000, latche >> 3);
-	setprg16(0xc000, 1);
-	setchr8(latche & 3);
-}
-
-void Mapper8_Init(CartInfo *info) {
-	Latch_Init(info, M8Sync, 0, 0x8000, 0xFFFF, 0, 0);
 }
 
 /*------------------ Map 11 ---------------------------*/
@@ -546,12 +535,22 @@ static void BMCA65ASSync(void) {
 	setchr8(0);
 	if (latche & 0x80)
 		setmirror(MI_0 + (((latche >> 5) & 1)));
-	else
-		setmirror(((latche >> 3) & 1) ^ 1);
+	else {
+		if (A65ASsubmapper == 1)
+			setmirror(latche &0x08? MI_H: MI_V);
+		else
+			setmirror(latche &0x20? MI_H: MI_V);
+	}
+}
+
+void BMCA65AS_Reset() {
+	latche =0;
+	BMCA65ASSync();
 }
 
 void BMCA65AS_Init(CartInfo *info) {
 	A65ASsubmapper = info->submapper;
+	info->Reset = BMCA65AS_Reset;
 	Latch_Init(info, BMCA65ASSync, 0, 0x8000, 0xFFFF, 0, 0);
 }
 
@@ -577,10 +576,29 @@ static void BMCK3046Sync(void) {
 	setprg16(0x8000, latche);
 	setprg16(0xC000, latche | 0x07);
 	setchr8(0);
+	setmirror(latche &(submapper ==2? 0x08: 0x20)? MI_H: MI_V);
+}
+
+static DECLFW(BMCK3046_Write1) { /* Special bus conflict: 300 Ohm resistor placed so that for D3, ROM always wins. */
+	latche = CartBR(A) &0x08 | V &CartBR(A) &~0x08;
+	WSync();
+}
+
+static void BMCK3046_Power(void) {
+	LatchPower();
+	if (submapper ==1) SetWriteHandler(0x8000, 0xFFFF, BMCK3046_Write1);
+}
+
+static void BMCK3046_Reset(void) {
+	latche = 0;
+	WSync();
 }
 
 void BMCK3046_Init(CartInfo *info) {
+	submapper =info->submapper;
 	Latch_Init(info, BMCK3046Sync, 0, 0x8000, 0xFFFF, 0, 0);
+	info->Reset = BMCK3046_Reset;
+	info->Power = BMCK3046_Power;
 }
 
 /* Mapper 429: LIKO BBG-235-8-1B/Milowork FCFC1 */
@@ -617,4 +635,87 @@ static void M415Power(void) {
 void Mapper415_Init(CartInfo *info) {
 	Latch_Init(info, Mapper415_Sync, 0, 0x8000, 0xFFFF, 0, 0);
 	info->Power = M415Power;
+}
+
+/*------------------ Mapper 462 ---------------------------*/
+static uint8 M462OuterBank;
+
+static void Mapper462_Sync(void) {
+	if (M462OuterBank &0x40) {
+		setprg32(0x8000, latche &7 | M462OuterBank >>3 &~7);
+		setmirror(latche &0x10? MI_1: MI_0);
+	} else {
+		setprg16(0x8000, latche &7 |  M462OuterBank >>2 &~7);
+		setprg16(0xC000,         7 |  M462OuterBank >>2 &~7);
+		setmirror(M462OuterBank &0x10? MI_V: MI_H);
+	}	
+	setchr8(0);
+}
+
+static DECLFW(M462_WriteExtra) {
+	M462OuterBank =V;
+	Mapper462_Sync();
+}
+
+static void M462Power(void) {
+	M462OuterBank =0;
+	LatchPower();
+	SetWriteHandler(0xA000, 0xBFFF, M462_WriteExtra);
+}
+
+static void M462Reset(void) {
+	M462OuterBank =0;
+	Mapper462_Sync();
+}
+
+void Mapper462_Init(CartInfo *info) {
+	Latch_Init(info, Mapper462_Sync, 0, 0x8000, 0xFFFF, 0, 0);
+	info->Power = M462Power;
+	info->Reset = M462Reset;
+	AddExState(&M462OuterBank, 1, 0, "EXP0");
+}
+
+/*------------------ Mapper 477 ---------------------------*/
+static void Mapper477_Sync(void) {
+	if (latche &0xE) {
+		setprg16(0x8000, 0xFF);
+		setprg16(0xC000, latche);
+	} else
+		setprg32(0x8000, latche >>1);
+	setchr8(latche);
+}
+
+static DECLFW(Mapper477_Write) { /* Resistors placed on the first 128 KiB PRG ROM chip (banks 8-15) cause ROM to always win D0..D3. Otherwise, normal AND-type bus conflicts. */
+	latche = latche &8? (CartBR(A) &0x0F | V &CartBR(A) &~0x0F): (CartBR(A) &V);
+	WSync();
+}
+
+static void Mapper477_Power(void) {
+	LatchPower();
+	SetWriteHandler(0x8000, 0xFFFF, Mapper477_Write);
+}
+
+static void Mapper477_Reset(void) {
+	latche = 0;
+	WSync();
+}
+
+void Mapper477_Init(CartInfo *info) {
+	submapper =info->submapper;
+	Latch_Init(info, Mapper477_Sync, 0, 0x8000, 0xFFFF, 0, 0);
+	info->Reset = Mapper477_Reset;
+	info->Power = Mapper477_Power;
+}
+
+
+/*------------------ Mapper 481 ---------------------------*/
+
+static void Mapper481_Sync(void) {
+	setprg16(0x8000, latche >>4 &~7 | latche &7);
+	setprg16(0xc000, latche >>4     |         7);
+	setchr8(0);
+}
+
+void Mapper481_Init(CartInfo *info) {
+	Latch_Init(info, Mapper481_Sync, 0, 0x8000, 0xFFFF, 1, 0);
 }

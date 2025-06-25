@@ -176,17 +176,25 @@ void Mapper59_Init(CartInfo *info) {
 
 /*------------------ Map 061 ---------------------------*/
 static void M61Sync(void) {
-	if (((latche & 0x10) << 1) ^ (latche & 0x20)) {
-		setprg16(0x8000, ((latche & 0xF) << 1) | (((latche & 0x20) >> 4)));
-		setprg16(0xC000, ((latche & 0xF) << 1) | (((latche & 0x20) >> 4)));
+	if (latche &0x10) {
+		setprg16(0x8000, latche <<1 &0x1E | latche >>5 &0x01);
+		setprg16(0xC000, latche <<1 &0x1E | latche >>5 &0x01);
 	} else
 		setprg32(0x8000, latche & 0xF);
 	setchr8(latche >> 8);
 	setmirror(((latche >> 7) & 1) ^ 1);
 }
 
+void Mapper61_Reset() {
+	latche =0;
+	RAM[0x1A] =0;
+	RAM[0x1B] =0;
+	M61Sync();
+}
+
 void Mapper61_Init(CartInfo *info) {
 	Latch_Init(info, M61Sync, NULL, 0x0000, 0x8000, 0xFFFF, 0);
+	info->Reset = Mapper61_Reset;
 }
 
 /*------------------ Map 063 ---------------------------*/
@@ -548,18 +556,19 @@ void Mapper242_Init(CartInfo *info) {
 static void M288Sync(void) {
 	setchr8(latche);
 	setprg32(0x8000, latche >> 3);
+	setmirror(latche &0x20? MI_H: MI_V);
 }
 
 static DECLFR(M288Read) {
-	uint8 ret = CartBR(A);
-	if (latche & 0x20)
-		ret |= (dipswitch << 2);
-	return ret;
+	if (latche & 0x120 && ~latche & 0x10)
+		A |= dipswitch;
+	return CartBR(A);
 }
 
 static void M288Reset(void) {
 	dipswitch++;
-	dipswitch &= 3;
+	dipswitch &= 15;
+	latche =0;
 	M288Sync();
 }
 
@@ -837,3 +846,34 @@ static void M464Sync(void) {
 void Mapper464_Init(CartInfo *info) {
 	Latch_Init(info, M464Sync, NULL, 0x0000, 0x8000, 0xFFFF, 1);
 }
+
+/*------------------ Map 488 ---------------------------*/
+static void M488Sync(void) {
+	setchr8(latche);
+	if (latche &4)
+		setprg32(0x8000, latche);
+	else {
+		setprg16(0x8000, latche <<1 | latche >>4 &1);
+		setprg16(0xC000, latche <<1 | latche >>4 &1);
+	}
+}
+
+static DECLFR(M488Read) {
+	if (latche & 0x100)
+		A =A &~0x0F | dipswitch &0xF;
+	return CartBR(A);
+}
+
+static void M488Reset(void) {
+	dipswitch++;
+	latche =0;
+	M488Sync();
+}
+
+void Mapper488_Init(CartInfo *info) {
+	dipswitch = 0;
+	Latch_Init(info, M488Sync, M488Read, 0x0000, 0x8000, 0xFFFF, 0);
+	info->Reset = M488Reset;
+	AddExState(&dipswitch, 1, 0, "DIPSW");
+}
+

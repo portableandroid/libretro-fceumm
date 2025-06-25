@@ -47,6 +47,7 @@ uint8 *trainerpoo       = NULL;
 uint8 *ROM              = NULL;
 uint8 *VROM             = NULL;
 uint8 *ExtraNTARAM      = NULL;
+uint8 *MiscROM          = NULL;
 iNES_HEADER head        = {0};
 
 CartInfo iNESCart       = {0};
@@ -106,6 +107,10 @@ static void iNESGI(int h) {
 		if (ExtraNTARAM) {
 			free(ExtraNTARAM);
 			ExtraNTARAM = NULL;
+		}
+		if (MiscROM) {
+			free(MiscROM);
+			MiscROM = NULL;
 		}
 		break;
 	}
@@ -199,14 +204,41 @@ static void SetInput(void) {
 	};
 	int x = 0;
 
-	while (moo[x].input1 >= 0 || moo[x].input2 >= 0 || moo[x].inputfc >= 0) {
-		if (moo[x].crc32 == iNESCart.CRC32) {
-			GameInfo->input[0] = moo[x].input1;
-			GameInfo->input[1] = moo[x].input2;
-			GameInfo->inputfc = moo[x].inputfc;
-			break;
-		}
-		x++;
+	switch(head.ExpDevice) {
+		case 0x03: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_4PLAYER;   break;
+		case 0x08: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_ZAPPER;    GameInfo->inputfc =SIFC_NONE;      break;
+		case 0x0A: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_SHADOW;    break;
+		case 0x0B: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_POWERPADB; GameInfo->inputfc =SIFC_NONE;      break;
+		case 0x0C: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_POWERPADB; GameInfo->inputfc =SIFC_NONE;      break;
+		case 0x0D: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_FTRAINERA; break;
+		case 0x0E: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_FTRAINERB; break;
+		case 0x0F: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_ARKANOID;  GameInfo->inputfc =SIFC_NONE;      break;
+		case 0x10: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_ARKANOID;  break;
+		case 0x12: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_HYPERSHOT; break;
+		case 0x15: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_MAHJONG;   break;
+		case 0x16: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_QUIZKING;  break;
+		case 0x17: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_OEKAKIDS;  break;
+		case 0x18: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_BWORLD;    break;
+		case 0x1A: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_FTRAINERA; break;
+		case 0x1B: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_TOPRIDER;  break;
+		case 0x23: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_FKB;       break;
+		case 0x24: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_PEC586KB;  break;
+		case 0x26: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_SUBORKB;   break;
+		case 0x27: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_MOUSE;     GameInfo->inputfc =SIFC_SUBORKB;   break;
+		case 0x28: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_SUBORKB;   break;
+		case 0x2A: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_ZAPPER;    GameInfo->inputfc =SIFC_NONE;      break; /* Emulate "multicart" simply as "Zapper" */
+		case 0x36: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_SUBORKB;   break;
+		case 0x40: GameInfo->input[0] =SI_GAMEPAD; GameInfo->input[1] =SI_GAMEPAD;   GameInfo->inputfc =SIFC_SUBORKB;   break;
+		default:
+			while (moo[x].input1 >= 0 || moo[x].input2 >= 0 || moo[x].inputfc >= 0) {
+				if (moo[x].crc32 == iNESCart.CRC32) {
+					GameInfo->input[0] = moo[x].input1;
+					GameInfo->input[1] = moo[x].input2;
+					GameInfo->inputfc = moo[x].inputfc;
+					break;
+				}
+				x++;
+			}
 	}
 }
 
@@ -427,9 +459,9 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "CNROM",                      3, CNROM_Init             )
 	INES_BOARD( "MMC3",                       4, Mapper4_Init           )
 	INES_BOARD( "MMC5",                       5, Mapper5_Init           )
-	INES_BOARD( "FFE Rev. A",                 6, Mapper6_Init           )
+	INES_BOARD( "FFE Rev. A",                 6, FFE_Init               )
 	INES_BOARD( "ANROM",                      7, ANROM_Init             )
-	INES_BOARD( "",                           8, Mapper8_Init           ) /* no games, it's worthless */
+	INES_BOARD( "",                           8, FFE_Init               )
 	INES_BOARD( "MMC2",                       9, Mapper9_Init           )
 	INES_BOARD( "MMC4",                      10, Mapper10_Init          )
 	INES_BOARD( "Color Dreams",              11, Mapper11_Init          )
@@ -438,7 +470,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "REX SL-1632",               14, UNLSL1632_Init         )
 	INES_BOARD( "100-in-1",                  15, Mapper15_Init          )
 	INES_BOARD( "BANDAI 24C02",              16, Mapper16_Init          )
-	INES_BOARD( "FFE Rev. B",                17, Mapper17_Init          )
+	INES_BOARD( "FFE Rev. B",                17, FFE_Init               )
 	INES_BOARD( "JALECO SS880006",           18, Mapper18_Init          ) /* JF-NNX (EB89018-30007) boards */
 	INES_BOARD( "Namcot 106",                19, Mapper19_Init          )
 /*    INES_BOARD( "",                         20, Mapper20_Init ) */
@@ -693,10 +725,12 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "8-in-1 JY-119",            267, Mapper267_Init         )
 	INES_BOARD( "COOLBOY/MINDKIDS",         268, Mapper268_Init         ) /* Submapper distinguishes between COOLBOY and MINDKIDS */
 	INES_BOARD( "Games Xplosion 121-in-1",  269, Mapper269_Init         )
+	INES_BOARD( "OneBus+412C Bankswitch",   270, Mapper270_Init         )
 	INES_BOARD( "MGC-026",                  271, Mapper271_Init         )
 	INES_BOARD( "Akumajō Special: Boku Dracula-kun", 272, Mapper272_Init         )
 	INES_BOARD( "80013-B",                  274, BMC80013B_Init         )
 	INES_BOARD( "",                         277, Mapper277_Init         )
+	INES_BOARD( "K-3017",                   280, Mapper280_Init         )
 	INES_BOARD( "YY860417C",                281, Mapper281_Init         )
 	INES_BOARD( "860224C",                  282, Mapper282_Init         )
 	INES_BOARD( "GS-2004/GS-2013",          283, Mapper283_Init         )
@@ -772,10 +806,12 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "830506C",                  362, Mapper362_Init         )
 	INES_BOARD( "JY830832C",                364, Mapper364_Init         )
 	INES_BOARD( "GN-45",                    366, GN45_Init              )
+	INES_BOARD( "JC-016-2 variant",         367, Mapper367_Init         )
 	INES_BOARD( "Yung-08",                  368, Mapper368_Init         )
 	INES_BOARD( "N49C-300",                 369, Mapper369_Init         )
 	INES_BOARD( "Golden Mario Party II - Around the World 6-in-1", 370, Mapper370_Init         )
 	INES_BOARD( "MMC3 PIRATE SFC-12",       372, Mapper372_Init         )
+	INES_BOARD( "MMC3 PIRATE SFC-13",       373, Mapper373_Init         )
 	INES_BOARD( "95/96 Super HiK 4-in-1",   374, Mapper374_Init         )
 	INES_BOARD( "135-in-1",                 375, Mapper375_Init         )
 	INES_BOARD( "YY841155C",                376, Mapper376_Init         )
@@ -784,6 +820,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "KN-42",                    381, Mapper381_Init         )
 	INES_BOARD( "830928C",                  382, Mapper382_Init         )
 	INES_BOARD( "YY840708C",                383, Mapper383_Init         )
+	INES_BOARD( "L1A16",     	        384, Mapper384_Init         )
 	INES_BOARD( "NTDEC 2779",               385, Mapper385_Init         )
 	INES_BOARD( "YY860729C",                386, Mapper386_Init         )
 	INES_BOARD( "YY850735C",                387, Mapper387_Init         )
@@ -791,20 +828,24 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "Caltron 9-in-1",           389, Mapper389_Init         )
 	INES_BOARD( "Realtec 8031",             390, Mapper390_Init         )
 	INES_BOARD( "BS-110",                   391, Mapper391_Init         )
+	INES_BOARD( "00202650",                 392, Mapper392_Init         )
 	INES_BOARD( "820720C",                  393, Mapper393_Init         )
 	INES_BOARD( "HSK007",                   394, Mapper394_Init         )
 	INES_BOARD( "Realtec 8210",             395, Mapper395_Init         )
 	INES_BOARD( "YY850437C",                396, Mapper396_Init         )
 	INES_BOARD( "YY850439C",                397, Mapper397_Init         )
 	INES_BOARD( "YY840820C",                398, Mapper398_Init         )
+	INES_BOARD( "BATMAP-000",               399, Mapper399_Init         )
 	INES_BOARD( "BMC Super 19-in-1 (VIP19)",401, Mapper401_Init         )
 	INES_BOARD( "831019C J-2282",           402, J2282_Init             )
 	INES_BOARD( "89433",                    403, Mapper403_Init         )
 	INES_BOARD( "JY012005",                 404, Mapper404_Init         )
+	INES_BOARD( "Impact Soft",              406, Mapper406_Init         )
 	INES_BOARD( "retroUSB DPCMcart",        409, Mapper409_Init         )
 	INES_BOARD( "JY-302",                   410, Mapper410_Init         )
 	INES_BOARD( "A88S-1",                   411, Mapper411_Init         )
 	INES_BOARD( "Henggedianzi FK-206 JG",   412, Mapper412_Init         )
+	INES_BOARD( "BATMAP-SRR-X",   		413, Mapper413_Init         )
 	INES_BOARD( "9999999-in-1",             414, Mapper414_Init         )
 	INES_BOARD( "0353",                     415, Mapper415_Init         )
 	INES_BOARD( "4-in-1/N-32",              416, Mapper416_Init         )
@@ -820,18 +861,22 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "NC-20MB",                  433, Mapper433_Init         )
 	INES_BOARD( "S-009",                    434, Mapper434_Init         )
 	INES_BOARD( "F-1002",                   435, Mapper435_Init         )
-	INES_BOARD( "820401/T-217",             436, Mapper436_Init         )
+	INES_BOARD( "ZLX-08",                   436, Mapper436_Init         )
 	INES_BOARD( "NTDEC TH2348",             437, Mapper437_Init         )
 	INES_BOARD( "K-3071",                   438, Mapper438_Init         )
 	INES_BOARD( "YS2309",                   439, Mapper439_Init         )
 	INES_BOARD( "850335C",                  441, Mapper441_Init         )
 	INES_BOARD( "NC-3000M",                 443, Mapper443_Init         )
 	INES_BOARD( "NC-7000M/NC-8000M",        444, Mapper444_Init         )
+	INES_BOARD( "DG574B",                   445, Mapper445_Init         )
+	INES_BOARD( "KL-06",                    447, Mapper447_Init         )
 	INES_BOARD( "830768C",                  448, Mapper448_Init         )
 	INES_BOARD( "22-in-1 King Series",      449, Mapper449_Init         )
+	INES_BOARD( "晶太 YY841157C",          	450, Mapper450_Init         )
+	INES_BOARD( "Impact Soft C-IM2-BASE", 	451, Mapper451_Init         )
 	INES_BOARD( "DS-9-27",                  452, Mapper452_Init         )
 	INES_BOARD( "Realtec 8042",    		453, Mapper453_Init         )
-	INES_BOARD( "110-in-1",     		454, Mapper454_Init )
+	INES_BOARD( "110-in-1",     		454, Mapper454_Init         )
 	INES_BOARD( "N625836",                  455, Mapper455_Init         )
 	INES_BOARD( "K6C3001A",                 456, Mapper456_Init         )
 	INES_BOARD( "810431C",                  457, Mapper457_Init         )
@@ -839,6 +884,7 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "8-in-1",                   459, Mapper459_Init         )
 	INES_BOARD( "FC-29-40/K-3101",        	460, Mapper460_Init         )
 	INES_BOARD( "0324",                 	461, Mapper461_Init         )
+	INES_BOARD( "BMC-971107-00G",        	462, Mapper462_Init         )
 	INES_BOARD( "YH810X1",                 	463, Mapper463_Init         )
 	INES_BOARD( "NTDEC 9012",          	464, Mapper464_Init         )
 	INES_BOARD( "ET-120",                 	465, Mapper465_Init         )
@@ -846,13 +892,30 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "47-2",                 	467, Mapper467_Init         )
 	INES_BOARD( "BlazePro CPLD",           	468, Mapper468_Init         )
 	INES_BOARD( "INX_007T_V01",		470, INX_007T_Init          )
+	INES_BOARD( "Impact Soft IM1",	       	471, Mapper471_Init         )
+	INES_BOARD( "830947",	          	472, Mapper472_Init         )
+	INES_BOARD( "KJ01A-18",	          	473, Mapper473_Init         )
+	INES_BOARD( "NTDEC N625231",	       	474, Mapper474_Init         )
+	INES_BOARD( "820215-C-A2",	       	475, Mapper475_Init         )
+	INES_BOARD( "Croaky Karaoke",     	476, Mapper476_Init         )
+	INES_BOARD( "15-in-1",		     	477, Mapper477_Init         )
+	INES_BOARD( "WE7HGX",		     	478, Mapper478_Init         )
+	INES_BOARD( "480",   		     	480, Mapper480_Init         )
+	INES_BOARD( "045N",          		481, Mapper481_Init         )
+	INES_BOARD( "K-1079",          		482, Mapper482_Init         )
+	INES_BOARD( "ESTIQUE",         		484, Mapper484_Init         )
+	INES_BOARD( "0359",         		485, Mapper485_Init         )
+	INES_BOARD( "KS7009",         		486, Mapper486_Init         )
+	INES_BOARD( "AVE NINA-08",    		487, Mapper487_Init         )
+	INES_BOARD( "HC001",    		488, Mapper488_Init         )
 	INES_BOARD( "Yhc-000",                  500, Mapper500_Init         )
 	INES_BOARD( "Yhc-001",                  501, Mapper501_Init         )
 	INES_BOARD( "Yhc-002",                  502, Mapper502_Init         )
 	INES_BOARD( "SA-9602B",                 513, SA9602B_Init           )
-	INES_BOARD( "Brilliant Com Cocoma Pack", 516, Mapper516_Init        )
+	INES_BOARD( "Brilliant Com Cocoma Pack",516, Mapper516_Init        )
 	INES_BOARD( "DANCE2000",                518, UNLD2000_Init          )
 	INES_BOARD( "EH8813A",                  519, UNLEH8813A_Init        )
+	INES_BOARD( "YuYuHakusho+DBZ",          520, Mapper520_Init        )
 	INES_BOARD( "DREAMTECH01",              521, DreamTech01_Init       )
 	INES_BOARD( "LH10",                     522, LH10_Init              )
 	INES_BOARD( "Jncota KT-???",            523, Mapper523_Init         )
@@ -870,7 +933,9 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "Kid Ikarus (FDS)",         539, Mapper539_Init         )
 	INES_BOARD( "82112C",                   540, Mapper540_Init         )
 	INES_BOARD( "LittleCom 160-in-1",       541, Mapper541_Init         )
+	INES_BOARD( "JYV610 830626C",           542, Mapper542_Init         )
 	INES_BOARD( "5-in-1 (CH-501)",          543, Mapper543_Init         )
+	INES_BOARD( "WAIXING FS306",            544, Mapper544_Init         )
 	INES_BOARD( "",              		551, Mapper178_Init         )
 	INES_BOARD( "SACHEN 3013",              553, Mapper553_Init         )
 	INES_BOARD( "KS-7010",                  554, Mapper554_Init         )
@@ -878,6 +943,10 @@ INES_BOARD_BEGIN()
 	INES_BOARD( "JY-215",                   556, Mapper556_Init         )
 	INES_BOARD( "",                         550, Mapper550_Init         )
 	INES_BOARD( "YC-03-09",                 558, Mapper558_Init         )
+	INES_BOARD( "Subor Sango II",           559, Mapper559_Init         )
+	INES_BOARD( "Bung Super Game Doctor",   561, Mapper561_562_Init     )
+	INES_BOARD( "Venus Turbo Game Doctor",  562, Mapper561_562_Init     )
+	INES_BOARD( "J-2020",                   563, Mapper563_Init         )
 INES_BOARD_END()
 
 static uint32 iNES_get_mapper_id(void)
@@ -908,8 +977,7 @@ static void iNES_read_header_info(void) {
    iNESCart.mapper    = iNES_get_mapper_id();
    iNESCart.iNES2     = (head.ROM_type2 & 0x0C) == 0x08;
 
-   if (iNESCart.iNES2)
-   {
+   if (iNESCart.iNES2) {
       ROM_size           |= ((head.upper_PRG_CHR_size >> 0) & 0xF) << 8;
       VROM_size          |= ((head.upper_PRG_CHR_size >> 4) & 0xF) << 8;	
       iNESCart.submapper = (head.ROM_type3 >> 4) & 0x0F;
@@ -918,6 +986,15 @@ static void iNES_read_header_info(void) {
       if (head.PRGRAM_size & 0xF0) iNESCart.PRGRamSaveSize = 64 << ((head.PRGRAM_size >> 4) & 0x0F);
       if (head.CHRRAM_size & 0x0F) iNESCart.CHRRamSize     = 64 << ((head.CHRRAM_size >> 0) & 0x0F);
       if (head.CHRRAM_size & 0xF0) iNESCart.CHRRamSaveSize = 64 << ((head.CHRRAM_size >> 4) & 0x0F);
+      iNESCart.PRGRomSize = ROM_size >=0xF00? (pow(2, head.ROM_size >>2)*((head.ROM_size &3)*2+1)): (ROM_size*0x4000);
+      iNESCart.CHRRomSize =VROM_size >=0xF00? (pow(2, head.VROM_size>>2)*((head.VROM_size&3)*2+1)): (VROM_size*0x2000);;
+      iNESCart.miscROMNumber =head.MiscRoms;
+      iNESCart.miscROMSize =iNESCart.miscROMNumber? (iNESCart.totalFileSize -16 -(head.ROM_type &4? 512: 0) -iNESCart.PRGRomSize -iNESCart.CHRRomSize): 0;
+      if (iNESCart.miscROMSize &0x8000000) iNESCart.miscROMSize =0;
+   } else {
+      iNESCart.submapper = iNESCart.miscROMNumber = iNESCart.miscROMSize = 0;
+      iNESCart.PRGRomSize =ROM_size*0x4000;
+      iNESCart.CHRRomSize =VROM_size*0x2000;
    }
 }
 
@@ -960,6 +1037,7 @@ int iNESLoad(const char *name, FCEUFILE *fp)
          memset((char*)(&head) + 0xA, 0, 0x6);
    }
 
+   iNESCart.totalFileSize =filesize;
    iNES_read_header_info();
 
    if (!ROM_size)
@@ -975,9 +1053,6 @@ int iNESLoad(const char *name, FCEUFILE *fp)
       filesize -= 512;
    }
 
-   iNESCart.PRGRomSize = ROM_size >=0xF00? (pow(2, head.ROM_size >>2)*((head.ROM_size &3)*2+1)): (ROM_size*0x4000);
-   iNESCart.CHRRomSize =VROM_size >=0xF00? (pow(2, head.VROM_size>>2)*((head.VROM_size&3)*2+1)): (VROM_size*0x2000);;
-
    romSize = iNESCart.PRGRomSize + iNESCart.CHRRomSize;
 
    if (romSize > filesize)
@@ -988,15 +1063,14 @@ int iNESLoad(const char *name, FCEUFILE *fp)
       FCEU_PrintError(" File contains %llu bytes of unused data\n", filesize - romSize);
 
    rom_size_pow2 = uppow2(iNESCart.PRGRomSize);
-
+   
    if ((ROM = (uint8*)FCEU_malloc(rom_size_pow2)) == NULL)
       return 0;
 
    memset(ROM, 0xFF, rom_size_pow2);
    FCEU_fread(ROM, 1, iNESCart.PRGRomSize, fp);
 
-   if (iNESCart.CHRRomSize)
-   {
+   if (iNESCart.CHRRomSize) {
       vrom_size_pow2 = uppow2(iNESCart.CHRRomSize);
 
       if ((VROM = (uint8*)FCEU_malloc(vrom_size_pow2)) == NULL)
@@ -1008,6 +1082,18 @@ int iNESLoad(const char *name, FCEUFILE *fp)
 
       memset(VROM, 0xFF, vrom_size_pow2);
       FCEU_fread(VROM, 1, iNESCart.CHRRomSize, fp);
+   }
+   
+   if (iNESCart.miscROMSize) {
+	   MiscROM =(uint8*) FCEU_malloc(iNESCart.miscROMSize);
+	   if (!MiscROM) {
+		   free(VROM);
+		   free(ROM);
+		   VROM =NULL;
+		   ROM =NULL;
+		   return 0;
+	   }
+	   FCEU_fread(MiscROM, 1, iNESCart.miscROMSize, fp);
    }
 
    iNESCart.PRGCRC32   = CalcCRC32(0, ROM, iNESCart.PRGRomSize);
