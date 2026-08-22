@@ -25,7 +25,7 @@
 
 #include "fceu-memory.h"
 
-void FCEUSS_Load_Mem(const void *buf, size_t size);
+int FCEUSS_Load_Mem(const void *buf, size_t size);
 size_t FCEUSS_Save_Mem(void *buf, size_t size);
 
 typedef struct {
