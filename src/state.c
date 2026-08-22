@@ -386,9 +386,15 @@ static int ReadStateChunks(memstream_t *st, int32_t totalsize)
    {
       t = memstream_getc(st);
       if (t == EOF)
+      {
+         ret = 0;
          break;
+      }
       if (!read32le_mem(&size, st))
+      {
+         ret = 0;
          break;
+      }
       /* size came straight off disk and is attacker-controlled. The
        * arithmetic below was previously
        *
@@ -402,7 +408,10 @@ static int ReadStateChunks(memstream_t *st, int32_t totalsize)
        * payload, which is the only legitimate range. */
       if (size > (uint32_t)0x7FFFFFFFu - 5
             || (uint32_t)totalsize < size + 5)
+      {
+         ret = 0;
          break;
+      }
       totalsize -= (int32_t)(size + 5);
 
       switch(t)
@@ -435,12 +444,15 @@ static int ReadStateChunks(memstream_t *st, int32_t totalsize)
             break;
          default:
             if (memstream_seek(st, size, SEEK_CUR) < 0)
+            {
+               ret = 0;
                goto endo;
+            }
             break;
       }
    }
 endo:
-   return ret;
+   return ret && totalsize == 0;
 }
 
 extern int geniestage;
@@ -487,7 +499,7 @@ size_t FCEUSS_Save_Mem(void *buf, size_t size)
    return (size_t)totalsize + 16;
 }
 
-void FCEUSS_Load_Mem(const void *buf, size_t size)
+int FCEUSS_Load_Mem(const void *buf, size_t size)
 {
    memstream_t *mem = memstream_open((uint8_t*)buf, size, 0);
 
@@ -501,7 +513,7 @@ void FCEUSS_Load_Mem(const void *buf, size_t size)
     * buffer is supplied directly by retro_unserialize; treat NULL
     * defensively rather than dereferencing. */
    if (!mem)
-      return;
+      return 0;
 
    /* If the buffer is shorter than the 16-byte header the read returns
     * fewer bytes; the magic-string memcmp would otherwise compare against
@@ -510,13 +522,13 @@ void FCEUSS_Load_Mem(const void *buf, size_t size)
    if (memstream_read(mem, header, 16) != 16u)
    {
       memstream_close(mem);
-      return;
+      return 0;
    }
 
    if (memcmp(header, "FCS", 3) != 0)
    {
       memstream_close(mem);
-      return;
+      return 0;
    }
 
    if (header[3] == 0xFF)
@@ -543,11 +555,17 @@ void FCEUSS_Load_Mem(const void *buf, size_t size)
    if (totalsize_u > 0x7FFFFFFFu)
    {
       memstream_close(mem);
-      return;
+      return 0;
    }
    totalsize = (int32_t)totalsize_u;
 
    x = ReadStateChunks(mem, totalsize);
+
+   if (!x)
+   {
+      memstream_close(mem);
+      return 0;
+   }
 
    if (stateversion < 9500)
       X.IRQlow = 0;
@@ -555,13 +573,11 @@ void FCEUSS_Load_Mem(const void *buf, size_t size)
    if (GameStateRestore)
       GameStateRestore(stateversion);
 
-   if (x)
-   {
-      FCEUPPU_LoadState(stateversion);
-      FCEUSND_LoadState(stateversion);
-   }
+   FCEUPPU_LoadState(stateversion);
+   FCEUSND_LoadState(stateversion);
 
    memstream_close(mem);
+   return 1;
 }
 
 void ResetExState(void (*PreSave)(void), void (*PostSave)(void))

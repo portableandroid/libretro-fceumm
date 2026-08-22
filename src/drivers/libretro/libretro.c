@@ -3437,8 +3437,7 @@ bool retro_unserialize(const void * data, size_t size)
    if (!data || size < 16 || size > retro_serialize_size() * 4)
       return false;
 
-   FCEUSS_Load_Mem(data, size);
-   return true;
+   return FCEUSS_Load_Mem(data, size) != 0;
 }
 
 static int checkGG(char c)
