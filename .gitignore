@@ -2,3 +2,6 @@
 *.a
 *.so
 .vscode
+build.log
+*.dll
+*.dylib

@@ -19,64 +19,67 @@
  */
 
 #include "mapinc.h"
-#include "vrc2and4.h"
+#include "asic_vrc2and4.h"
+#include "cartram.h"
 
-static uint8 reg;
-static uint8 dip;
-
-static SFORMAT Mapper447_stateRegs[] ={
-	{ &reg, 1, "EXP0" },
-	{ &dip, 1, "DIPS" },
-	{ 0 }
-};
+static uint8_t submapper;
+static uint8_t reg;
+static uint8_t pad;
 
 static void sync () {
-	VRC24_syncPRG(0x0F, reg <<4);
-	VRC24_syncCHR(0x7F, reg <<7);
+	if (submapper == 2) {
+		VRC24_syncPRG(0x1F, reg <<4 &~0x1F);
+		VRC24_syncCHR(0x7F, reg <<6 &~0x7F);
+	} else {
+		VRC24_syncPRG(0x0F, reg <<4);
+		VRC24_syncCHR(0x7F, reg <<7);
+	}
 	VRC24_syncMirror();
 	VRC24_syncWRAM(0);
 }
 
-static int Mapper447_getPRGBank(int bank) {
-	if (reg &4) {
-		if (~reg &2)
-			return VRC24_getPRGBank(bank &1) &~2 | bank &2;
-		else
-			return VRC24_getPRGBank(bank &1);
+static int getPRGBank (uint8_t bank) {
+	if (reg &0x04) {
+		int mask = reg &(submapper == 0? 0x02: 0x08) ? 1: 3;
+		return VRC24_getPRGBank(bank &1) &~mask | bank &mask;
 	} else
 		return VRC24_getPRGBank(bank);
 }
 
-DECLFR(Mapper447_readPRG) {
-	return CartBR(reg &8? (A &~3 | dip &3): A);
+static DECLFR (readPRG) {
+	return CartBR(reg &0x08 && ~reg &0x04? (A &~0x03 | pad &0x03): A);
 }
 
-DECLFW(Mapper447_writeReg) {
-	if (VRC24_misc &1 && ~reg &1) {
-		reg =A &0xFF;
-		VRC24_Sync();
+static DECLFW (writeReg) {
+	if (~reg &0x01) {
+		reg = A &0xFF;
+		sync();
 	}
 	CartBW(A, V);
 }
 
-void Mapper447_power(void) {
-	reg =0;
-	dip =0;
+static void power (void) {
+	reg = 0;
+	pad = 0;
 	VRC24_power();
-	SetReadHandler(0x8000, 0xFFFF, Mapper447_readPRG);
+	if (submapper == 0 || submapper == 2) SetReadHandler(0x8000, 0xFFFF, readPRG);
 }
 
-void Mapper447_reset(void) {
-	reg =0;
-	dip++;
-	VRC24_Sync();
-}	
+static void reset (void) {
+	reg = 0;
+	pad++;
+	VRC24_clear();
+}
 
 void Mapper447_Init (CartInfo *info) {
-	VRC24_init(info, sync, 0x04, 0x08, 1, 0, 2);
-	VRC24_WRAMWrite =Mapper447_writeReg;
-	VRC24_GetPRGBank =Mapper447_getPRGBank;
-	info->Power =Mapper447_power;
-	info->Reset =Mapper447_reset;
-	AddExState(Mapper447_stateRegs, ~0, 0, 0);
+	submapper = info->submapper;
+	if (submapper == 2)
+		VRC4_init(info, sync, 0x02, 0x04, 0, getPRGBank, NULL, NULL, writeReg, NULL );
+	else
+		VRC4_init(info, sync, 0x04, 0x08, 0, getPRGBank, NULL, NULL, writeReg, NULL );
+	WRAM_init(info, 2);
+	info->Power = power;
+	info->Reset = reset;
+	AddExState(&reg, 1, 0, "EXPR");
+	if (submapper == 0) AddExState(&pad, 1, 0, "DIPS");
 }

@@ -1,9 +1,10 @@
 DEBUG=0
-EXTERNAL_ZLIB=0
 STATIC_LINKING=0
 ENDIANNESS_DEFINES=
 SIGNED_CHAR=0
 HAVE_NTSC=1
+HAVE_HDPACK=1
+WANT_32BPP=0
 
 SPACE :=
 SPACE := $(SPACE) $(SPACE)
@@ -65,6 +66,7 @@ LIBS :=
 ifeq ($(platform), unix)
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
+    WANT_32BPP := 1
 ifneq ($(findstring SunOS,$(shell uname -a)),)
 	CC = gcc
 	SHARED := -shared -z defs
@@ -84,6 +86,8 @@ else ifeq ($(platform), osx)
 	SHARED := -dynamiclib
 	ifeq ($(arch),ppc)
 		ENDIANNESS_DEFINES += -DMSB_FIRST -DHAVE_NO_LANGEXTRA
+    else
+        WANT_32BPP := 1
 	endif
    ifeq ($(CROSS_COMPILE),1)
 		TARGET_RULE   = -target $(LIBRETRO_APPLE_PLATFORM) -isysroot $(LIBRETRO_APPLE_ISYSROOT)
@@ -106,6 +110,7 @@ else ifneq (,$(findstring ios,$(platform)))
 
 	TARGET := $(TARGET_NAME)_libretro_ios.dylib
 	fpic := -fPIC
+    WANT_32BPP := 1
 	SHARED := -dynamiclib
 	CFLAGS += -DIOS
 	ifeq ($(IOSSDK),)
@@ -129,6 +134,7 @@ endif
 else ifeq ($(platform), tvos-arm64)
 	TARGET := $(TARGET_NAME)_libretro_tvos.dylib
 	fpic := -fPIC
+    WANT_32BPP := 1
 	SHARED := -dynamiclib
 	CFLAGS += -DIOS
 	ifeq ($(IOSSDK),)
@@ -141,6 +147,7 @@ else ifeq ($(platform), tvos-arm64)
 else ifeq ($(platform), theos_ios)
 	DEPLOYMENT_IOSVERSION = 5.0
 	TARGET = iphone:latest:$(DEPLOYMENT_IOSVERSION)
+    WANT_32BPP := 1
 	ARCHS = armv7 armv7s
 	TARGET_IPHONEOS_DEPLOYMENT_VERSION=$(DEPLOYMENT_IOSVERSION)
 	THEOS_BUILD_DIR := objs
@@ -161,12 +168,11 @@ else ifeq ($(platform), ps2)
 	TARGET := $(TARGET_NAME)_libretro_$(platform).a
 	CC = mips64r5900el-ps2-elf-gcc$(EXE_EXT)
 	AR = mips64r5900el-ps2-elf-ar$(EXE_EXT)
-	FCEU_DEFINES := -DPATH_MAX=1024 -DINLINE=inline -DFCEU_VERSION_NUMERIC=9813 -DHAVE_ASPRINTF
+	FCEU_DEFINES := -DPATH_MAX=1024 -DINLINE=inline -DFCEU_VERSION_NUMERIC=9900 -DHAVE_ASPRINTF
 	ENDIANNESS_DEFINES := -DLSB_FIRST -DLOCAL_LE=1
 	PLATFORM_DEFINES := -DPS2 -D_EE -G0 -DFRONTEND_SUPPORTS_ABGR1555 -DRENDER_GSKIT_PS2
 	PLATFORM_DEFINES += -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I$(PS2DEV)/gsKit/include
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 
 	HAVE_NTSC = 0
 # PSP
@@ -179,7 +185,6 @@ else ifeq ($(platform), psp1)
 	PLATFORM_DEFINES += -fomit-frame-pointer -fstrict-aliasing
 	PLATFORM_DEFINES += -falign-functions=32 -falign-loops -falign-labels -falign-jumps
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 	HAVE_NTSC = 0
 
 # Vita
@@ -189,7 +194,6 @@ else ifeq ($(platform), vita)
 	AR = arm-vita-eabi-ar$(EXE_EXT)
 	PLATFORM_DEFINES := -DVITA
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 
 # DOS
 else ifeq ($(platform), dos)
@@ -198,7 +202,6 @@ else ifeq ($(platform), dos)
 	AR = i686-pc-msdosdjgpp-ar
 	CFLAGS += -march=i386
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 
 # CTR(3DS)
 else ifeq ($(platform), ctr)
@@ -210,7 +213,6 @@ else ifeq ($(platform), ctr)
 	CFLAGS += -Wall -mword-relocations
 	CFLAGS += -fomit-frame-pointer -fstrict-aliasing -ffast-math
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 	HAVE_NTSC=0
 
 # Raspberry Pi 1
@@ -244,6 +246,7 @@ else ifeq ($(platform), rpi3)
 else ifeq ($(platform), rpi3_64)
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
+    WANT_32BPP := 1
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
 	CFLAGS += -mcpu=cortex-a53 -mtune=cortex-a53 -funsafe-math-optimizations
 	CFLAGS += -fomit-frame-pointer -fstrict-aliasing -ffast-math
@@ -252,6 +255,7 @@ else ifeq ($(platform), rpi3_64)
 else ifneq (,$(findstring rpi4,$(platform)))
 	TARGET := $(TARGET_NAME)_libretro.so
 	fpic := -fPIC
+    WANT_32BPP := 1
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
 	CFLAGS += -mcpu=cortex-a72 -mtune=cortex-a72 -funsafe-math-optimizations
 	CFLAGS += -fomit-frame-pointer -fstrict-aliasing -ffast-math
@@ -259,7 +263,6 @@ else ifneq (,$(findstring rpi4,$(platform)))
 # Lightweight PS3 Homebrew SDK
 else ifneq (,$(filter $(platform), ps3 psl1ght))
     ENDIANNESS_DEFINES =  -DMSB_FIRST
-    EXTERNAL_ZLIB = 1
     STATIC_LINKING = 1
     PLATFORM_DEFINES += -D__PS3__
     
@@ -280,7 +283,6 @@ else ifeq ($(platform), xenon)
 	PLATFORM_DEFINES := -D__LIBXENON__
 	ENDIANNESS_DEFINES += -DMSB_FIRST
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 
 # Nintendo Game Cube
 else ifeq ($(platform), ngc)
@@ -291,7 +293,6 @@ else ifeq ($(platform), ngc)
 	PLATFORM_DEFINES += -U__INT32_TYPE__ -U __UINT32_TYPE__ -D__INT32_TYPE__=int
 	ENDIANNESS_DEFINES += -DMSB_FIRST
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 
 # Nintendo Wii
 else ifeq ($(platform), wii)
@@ -302,7 +303,6 @@ else ifeq ($(platform), wii)
 	PLATFORM_DEFINES += -U__INT32_TYPE__ -U __UINT32_TYPE__ -D__INT32_TYPE__=int
 	ENDIANNESS_DEFINES += -DMSB_FIRST
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 	SIGNED_CHAR=1
 
 # Nintendo WiiU
@@ -314,21 +314,21 @@ else ifeq ($(platform), wiiu)
 	PLATFORM_DEFINES += -ffunction-sections -fdata-sections -D__wiiu__ -D__wut__
 	ENDIANNESS_DEFINES += -DMSB_FIRST
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
 	SIGNED_CHAR=1
 
 # Nintendo Switch (libtransistor)
 else ifeq ($(platform), switch)
 	EXT=so
+    WANT_32BPP := 1
 	TARGET := $(TARGET_NAME)_libretro_$(platform).$(EXT)
 	include $(LIBTRANSISTOR_HOME)/libtransistor.mk
 	LDFLAGS = $(LD_SHARED_LIBRARY_FLAGS) -ltransistor.lib.nro $(LIBTRANSISTOR_LIB_LDFLAGS) -E
-	EXTERNAL_ZLIB=1
 
 # Nintendo Switch (libnx)
 else ifeq ($(platform), libnx)
     include $(DEVKITPRO)/libnx/switch_rules
     EXT=a
+    WANT_32BPP := 1
     TARGET := $(TARGET_NAME)_libretro_$(platform).$(EXT)
     DEFINES := -DSWITCH=1 -U__linux__ -U__linux -DRARCH_INTERNAL
     CFLAGS	:=	 $(DEFINES) -g \
@@ -428,7 +428,7 @@ else ifneq (,$(findstring armv,$(platform)))
 else ifeq ($(platform), emscripten)
 	TARGET := $(TARGET_NAME)_libretro_$(platform).bc
 	STATIC_LINKING=1
-	EXTERNAL_ZLIB=1
+    WANT_32BPP := 1
 
 # GCW0
 else ifeq ($(platform), gcw0)
@@ -439,7 +439,6 @@ else ifeq ($(platform), gcw0)
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
 	PLATFORM_DEFINES += -ffast-math -march=mips32 -mtune=mips32r2 -mhard-float -fomit-frame-pointer
-	EXTERNAL_ZLIB = 1
 
 # RETROFW
 else ifeq ($(platform), retrofw)
@@ -450,7 +449,6 @@ else ifeq ($(platform), retrofw)
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
 	PLATFORM_DEFINES += -ffast-math -march=mips32 -mtune=mips32 -mhard-float -fomit-frame-pointer
-	EXTERNAL_ZLIB = 1
 
 # Miyoo
 else ifeq ($(platform), miyoo)
@@ -461,12 +459,12 @@ else ifeq ($(platform), miyoo)
 	fpic := -fPIC
 	SHARED := -shared -Wl,--version-script=src/drivers/libretro/link.T -Wl,-no-undefined
 	PLATFORM_DEFINES += -fomit-frame-pointer -ffast-math -mcpu=arm926ej-s
-	EXTERNAL_ZLIB = 1
 
 # Windows MSVC 2017 all architectures
 else ifneq (,$(findstring windows_msvc2017,$(platform)))
 	CC  = cl.exe
 	CXX = cl.exe
+    WANT_32BPP := 1
 
 	PlatformSuffix = $(subst windows_msvc2017_,,$(platform))
 	ifneq (,$(findstring desktop,$(PlatformSuffix)))
@@ -698,6 +696,7 @@ else
 	TARGET := $(TARGET_NAME)_libretro.dll
 	CC ?= gcc
 	SHARED := -shared -static-libgcc -static-libstdc++ -s -Wl,--version-script=src/drivers/libretro/link.T
+    WANT_32BPP := 1
 endif
 
 ifeq ($(DEBUG), 1)
@@ -727,15 +726,18 @@ CXXFLAGS += -fsanitize=$(SANITIZER)
 LDFLAGS += -fsanitize=$(SANITIZER)
 endif
 
-ifeq ($(EXTERNAL_ZLIB), 1)
-	CFLAGS += -DHAVE_EXTERNAL_ZLIB
-endif
-
 ifeq ($(SIGNED_CHAR), 1)
 	CFLAGS += -fsigned-char
 endif
 
 CORE_DIR := src
+
+# Mesen HD texture pack support needs a 32bpp-capable frontend and a
+# reasonable amount of memory for the decoded artwork; keep it off on
+# constrained console targets and the palettized PS2/PSP render paths.
+ifneq (,$(filter $(platform), ps2 psp1 ctr dos ngc wii gekko))
+	HAVE_HDPACK = 0
+endif
 
 include Makefile.common
 
@@ -767,7 +769,7 @@ else ifneq (,$(findstring msvc,$(platform)))
 WARNING_DEFINES =
 LIBM :=
 else
-WARNING_DEFINES = -Wno-write-strings
+WARNING_DEFINES = -Wno-write-strings -Wsign-compare -Wundef -Wmissing-prototypes
 endif
 
 CFLAGS += $(fpic) $(WARNING_DEFINES) $(DEFINES) $(ENDIANNESS_DEFINES) 

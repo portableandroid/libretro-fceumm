@@ -23,10 +23,10 @@
 
 #include "mapinc.h"
 
-static uint16 latche;
-static uint8 dipswitch;
-static uint8 isKN35A;
-static uint8 is4K1;
+static uint16_t latche;
+static uint8_t dipswitch;
+static uint8_t isKN35A;
+static uint8_t is4K1;
 
 static SFORMAT StateRegs[] = {
    { &latche, 2 | FCEUSTATE_RLSB, "LATC" },
@@ -57,7 +57,7 @@ static void Sync(void)
 static DECLFR(M380Read)
 {
    if (latche & 0x100 && !isKN35A)
-      return CartBR(A | dipswitch);
+      return CartBR(A &~0x0F | dipswitch);
    return CartBR(A);
 }
 
